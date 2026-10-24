@@ -208,6 +208,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Xem trước\nngắt trang",
         "Page\nLayout" => "Bố trí\ntrang",
         "Formula Bar" => "Thanh công thức",
+        "Name Box" => "Hộp tên",
+        "Cell Editor" => "Trình soạn thảo ô",
+        "Font Size" => "Cỡ chữ",
         "Gridlines" => "Đường lưới",
         "Headings" => "Tiêu đề hàng/cột",
         "Zoom" => "Thu phóng",
@@ -304,6 +307,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "More\nFunctions" => "Hàm\nkhác",
         "Sheet Options|View" => "Xem",
         "Print" => "In",
+        "Print What" => "Nội dung in",
         // Page Layout view and the Header & Footer tab.
         "Click to add data" => "Bấm để thêm dữ liệu",
         "Add header" => "Thêm đầu trang",
@@ -409,6 +413,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Workbook calculation" => "Tính toán sổ làm việc",
         "Enable iterative calculation" => "Bật tính toán lặp",
         "Calculation settings are saved with the workbook." => "Thiết lập tính toán được lưu cùng sổ làm việc.",
+        "Text Box" => "Hộp văn bản",
         _ => return None,
     })
 }

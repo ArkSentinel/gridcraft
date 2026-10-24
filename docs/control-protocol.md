@@ -13,7 +13,10 @@ Then send newline-delimited JSON to `127.0.0.1:7979`. Every request line gets on
 {"id": 1, "ok": true, "result": {"cell": "B2", "value": "45"}}
 ```
 
-Errors come back as `{"id": …, "ok": false, "error": "…"}`.
+Errors come back as `{"id": …, "ok": false, "error": "…"}`. Asynchronous work that
+finishes later than the reply (a `ui.screenshot` capture) adds its own `request` token to
+the reply so the client can match it; a capture that completes after its 8 s deadline returns
+the timeout error and writes no file.
 
 A line that is not a JSON object with a string `method` (an HTTP request, text that isn't JSON,
 bytes that aren't UTF-8, a line over 64 MiB) gets one error reply and the server closes the
@@ -37,7 +40,7 @@ connection; nothing sent after it runs. Blank lines are skipped.
 | `ui.ribbon` | `{tab}` | Switch ribbon tab |
 | `ui.dialog` / `ui.dialog.set` / `ui.dialog.confirm` / `ui.dialog.cancel` | `{name}` / `{field, value}` | Open, fill in and confirm dialogs; `confirm` runs the dialog's command with the same parameters as its OK button |
 | `ui.backstage` (via `engine.execute`) | `{page?: home\|new\|open\|info\|saveAs\|print\|export\|options\|account\|close}` | Open the File tab's Backstage view on a page, or close it (`ui.inspect` reports the open page as `backstage`) |
-| `ui.screenshot` | `{path?}` | PNG of the window (base64 when no path). Animations are settled first: the picture shows the final state |
+| `ui.screenshot` | `{path?}` | PNG of the window (base64 when no path). Animations are settled first: the picture shows the final state. On the native app it works while hidden or occluded when the platform still reports the current content size (the request asks for a hidden paint); a minimized window has no capturable size, so its request stays queued until the window is restored and otherwise reports the 8 s timeout. In a **hidden browser tab** the web runner does not implement that paint request, so the capture waits until the tab is shown again or reports the 8 s timeout. Up to 4 outstanding requests, 128 MiB per image and 256 MiB aggregate, reserving the largest image the ±1-pixel rounding rule can retain; a request that would exceed a budget is refused without evicting earlier ones. A resize/DPI/zoom/visibility/occlusion change during capture is retried within the bounded retry budget or reported instead of saving stale pixels; the identity intentionally includes zoom and occlusion even though the expected physical size may be unchanged, so a capture never crosses layout generations. Every reply — success, refusal or timeout — carries the request `token` as `request` |
 | `ui.set` | `{dark?, formulaBar?, ribbonCollapsed?, animations?}` | UI preferences (`formulaBar` runs `view.formulaBar`) |
 | `ui.resize` / `ui.focus` | `{width, height}` | Window control |
 | `app.open` / `app.save` / `app.quit` | `{path, password?}` / `{path?}` | Files and lifetime. `password` opens a password-protected workbook; without it, such a workbook returns an error (never a dialog) |

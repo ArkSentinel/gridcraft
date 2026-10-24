@@ -204,6 +204,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Anteprima interruzioni\ndi pagina",
         "Page\nLayout" => "Layout\ndi pagina",
         "Formula Bar" => "Barra della formula",
+        "Name Box" => "Casella nome",
+        "Cell Editor" => "Editor di cella",
+        "Font Size" => "Dimensione carattere",
         "Gridlines" => "Griglia",
         "Headings" => "Intestazioni",
         "Zoom" => "Zoom",
@@ -301,6 +304,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "Scuro",
         "Sheet Options|View" => "Visualizza",
         "Print" => "Stampa",
+        "Print What" => "Cosa stampare",
         // Page Layout view and the Header & Footer tab.
         "Click to add data" => "Fai clic per aggiungere dati",
         "Add header" => "Aggiungi intestazione",

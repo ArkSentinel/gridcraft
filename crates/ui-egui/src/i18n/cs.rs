@@ -186,6 +186,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Náhled\nkonců stránek",
         "Page\nLayout" => "Rozložení\nstránky",
         "Formula Bar" => "Řádek vzorců",
+        "Name Box" => "Pole názvu",
+        "Cell Editor" => "Editor buňky",
+        "Font Size" => "Velikost písma",
         "Gridlines" => "Mřížka",
         "Headings" => "Záhlaví",
         "Zoom" => "Lupa",
@@ -413,6 +416,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "More\nFunctions" => "Další\nfunkce",
         "Sheet Options|View" => "Zobrazit",
         "Print" => "Tisknout",
+        "Print What" => "Co tisknout",
 
         // Additional runtime labels and tooltips, grouped by source file.
         // formula_bar.rs (alphabetical keys).

@@ -38,7 +38,7 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
                 ui.painter().rect_filled(field, 4.0, t.input_bg);
                 ui.painter().rect_stroke(field, 4.0, Stroke::new(1.0, t.input_border), StrokeKind::Inside);
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field.shrink2(vec2(6.0, 3.0))));
-                let id = egui::Id::new("gridcraft.formula_bar");
+                let id = egui::Id::unique("gridcraft.formula_bar");
                 let read_only = active_spill_anchor(app).is_some();
                 if app.editor.is_some() {
                     editor_widget(app, &mut child, id, theme::ui_font(13.0), expanded, field.width() - 12.0);
@@ -102,14 +102,19 @@ fn active_input(app: &SheetApp) -> String {
 }
 
 fn name_box(app: &mut SheetApp, ui: &mut egui::Ui, t: &Tokens) {
-    let id = egui::Id::new("gridcraft.name_box");
+    let id = egui::Id::unique("gridcraft.name_box");
     let shown = app.name_box_text();
     let mut text = app.name_box.clone().unwrap_or(shown.clone());
     let rect = Rect::from_min_size(ui.cursor().min, vec2(118.0, 24.0));
     ui.painter().rect_filled(rect, 4.0, t.input_bg);
     ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, t.input_border), StrokeKind::Inside);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(rect.min + vec2(6.0, 3.0), vec2(96.0, 18.0))));
-    let resp = child.add(TextEdit::singleline(&mut text).id(id).frame(egui::Frame::NONE).font(theme::ui_font(13.0)).desired_width(96.0));
+    // The box has no visible label of its own: screen readers and the strict accessibility check
+    // need a name (egui 0.37 makes unnamed text inputs a test failure).
+    let accessible_name = app.ui.language.tr("Name Box").to_string();
+    let resp = child
+        .add(TextEdit::singleline(&mut text).id(id).frame(egui::Frame::NONE).font(theme::ui_font(13.0)).desired_width(96.0))
+        .accessible_name(accessible_name);
     if resp.gained_focus() {
         app.name_box = Some(shown.clone());
     }
@@ -175,7 +180,7 @@ fn entry_shrank(chars_before: usize, text: &str) -> bool {
 /// The text editor used in the cell and in the formula bar (they share `app.editor`).
 pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: FontId, multiline: bool, width: f32) {
     let Some(mut ed) = app.editor.take() else { return };
-    let mine = ed.from_formula_bar == (id == egui::Id::new("gridcraft.formula_bar"));
+    let mine = ed.from_formula_bar == (id == egui::Id::unique("gridcraft.formula_bar"));
     // Keys the editor handles itself (before the TextEdit sees them), only where it has focus.
     let focused = ui.ctx().memory(|m| m.focused());
     let has_focus = focused == Some(id) || (mine && (ed.request_focus || focused.is_none()));
@@ -294,7 +299,7 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     // The text widget.
     let refs = formula_refs(&ed.text);
     let text_color = Tokens::get(ui.ctx()).text;
-    let cell_text_color = if id == egui::Id::new("gridcraft.cell_editor") { Color32::BLACK } else { text_color };
+    let cell_text_color = if id == egui::Id::unique("gridcraft.cell_editor") { Color32::BLACK } else { text_color };
     let font2 = font.clone();
     let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
         let s = buf.as_str();
@@ -316,7 +321,7 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     };
     let chars_before = ed.text.chars().count();
     // The in-cell editor is as tall as its lines (a multiline field reserves four rows).
-    let in_cell = id == egui::Id::new("gridcraft.cell_editor");
+    let in_cell = id == egui::Id::unique("gridcraft.cell_editor");
     let edit = if multiline || ed.text.contains('\n') {
         TextEdit::multiline(&mut ed.text).desired_rows(if in_cell { 1 } else { 4 })
     } else {
@@ -331,6 +336,9 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
         .lock_focus(true)
         .event_filter(egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
         .show(ui);
+    // Both editors are text inputs without a visible label next to them: name the one being shown.
+    let accessible_name = (if in_cell { app.ui.language.tr("Cell Editor") } else { app.ui.language.tr("Formula Bar") }).to_string();
+    (*output.response).clone().accessible_name(accessible_name);
     let resp = output.response.clone();
     let synced = mine && (ed.request_focus || ed.sync_caret);
     if synced {
@@ -344,7 +352,7 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
         output.state.store(ui.ctx(), id);
     } else if resp.clicked() || resp.gained_focus() {
         // Clicking into the other editor moves editing there.
-        ed.from_formula_bar = id == egui::Id::new("gridcraft.formula_bar");
+        ed.from_formula_bar = id == egui::Id::unique("gridcraft.formula_bar");
         ed.enter_mode = false;
         app.session.mode = gridcraft_engine::Mode::Edit;
     }
@@ -394,8 +402,11 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
         ui.painter().rect_filled(r, 0.0, Color32::from_rgb(0x2E, 0x6F, 0xD8));
         ui.painter().galley(pos, g, Color32::WHITE);
     }
-    // Autocomplete list and argument hint under the editor.
-    if mine && ui.is_rect_visible(resp.rect) && (!ed.autocomplete.is_empty() || ed.current_function().is_some()) {
+    // Autocomplete list and argument hint under the editor. Decide visibility from the area the
+    // editor was allotted, not from its response: egui 0.37 gives every text field a
+    // `spacing.interact_size.y` floor, so a one-line cell editor's response can reach below a short
+    // cell and touch the visible quadrant even while the cell itself is hidden under a frozen row.
+    if mine && ui.max_rect().intersect(ui.clip_rect()).is_positive() && (!ed.autocomplete.is_empty() || ed.current_function().is_some()) {
         let below = resp.rect.left_bottom() + vec2(0.0, 4.0);
         let language = app.ui.language;
         // Areas have their own clip rect: keep cell helpers inside the worksheet.
@@ -639,6 +650,9 @@ mod spill_tests {
                 app,
             );
             h.run_steps(3);
+            // `run_steps` does not enforce the 0.37 strict policy; run it explicitly so the
+            // formula bar's accessible names are actually tested.
+            h.check_accessibility();
             let disabled = Tokens::get(&h.ctx).text_disabled;
             assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t)
                 if t.galley.job.text == "=SEQUENCE(3)" && t.galley.job.sections.iter().all(|section| section.format.color == disabled))));
@@ -649,6 +663,7 @@ mod spill_tests {
             h.run_steps(3);
             h.get_by_label("=SEQUENCE(3)").click();
             h.run_steps(3);
+            h.check_accessibility();
             assert!(h.state().editor.as_ref().is_some_and(|e| e.from_formula_bar));
         }
     }

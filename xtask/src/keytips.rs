@@ -344,7 +344,7 @@ use gridcraft_ui_egui::SheetApp;
 type Harness = egui_kittest::Harness<'static, SheetApp>;
 
 fn harness(session: Session) -> Harness {
-    let mut h = egui_kittest::Harness::builder()
+    let mut h = crate::common::builder()
         .with_os(OperatingSystem::Nix)
         .with_size(egui::vec2(1200.0, 800.0))
         .build_ui_state(
@@ -352,7 +352,7 @@ fn harness(session: Session) -> Harness {
                 app.logic(ui.ctx());
                 app.ui(ui);
             },
-            SheetApp::new(session, Default::default()),
+            crate::common::app(session),
         );
     h.run_steps(4);
     h

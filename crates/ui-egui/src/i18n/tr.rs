@@ -187,6 +187,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Sayfa Sonu\nÖnizleme",
         "Page\nLayout" => "Sayfa\nDüzeni",
         "Formula Bar" => "Formül Çubuğu",
+        "Name Box" => "Ad kutusu",
+        "Cell Editor" => "Hücre düzenleyici",
+        "Font Size" => "Yazı tipi boyutu",
         "Gridlines" => "Kılavuz Çizgileri",
         "Headings" => "Başlıklar",
         "Zoom" => "Yakınlaştır",
@@ -407,6 +410,8 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "Koyu",
         "Sheet Options|View" => "Görünüm",
         "Print" => "Yazdır",
+        "Print What" => "Yazdırılacaklar",
+        "Text Box" => "Metin Kutusu",
         _ => return None,
     })
 }

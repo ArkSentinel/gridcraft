@@ -2,7 +2,7 @@
 
 use egui::{Color32, RawInput, Rect, Shape, pos2, vec2};
 use gridcraft_engine::Session;
-use gridcraft_ui_egui::{SheetApp, theme};
+use gridcraft_ui_egui::theme;
 use serde_json::json;
 
 fn render_pivot_field_buttons(dark: bool) -> Vec<Shape> {
@@ -14,7 +14,7 @@ fn render_pivot_field_buttons(dark: bool) -> Vec<Shape> {
         .unwrap();
     session.execute("selection.set", json!({"cell": "D3"})).unwrap();
 
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     app.ui.dark = dark;
     let ctx = egui::Context::default();
     let mut output = egui::FullOutput::default();

@@ -60,8 +60,10 @@ pub fn start() {
                     }
                     let mut app = SheetApp::new(session, services);
                     app.ui.system_theme = true;
-                    // Follow the browser's language, except a CJK one: the web build has no system
-                    // CJK fonts (none are bundled), so that interface would render as tofu.
+                    // Follow the browser's language, except a CJK one. CJK coverage comes from
+                    // optional craft-fonts input, not a guaranteed web font set, so a CJK browser
+                    // cannot be assumed to render localized labels without tofu. Users can still
+                    // choose a language explicitly.
                     let browser = gridcraft_ui_egui::i18n::Language::system();
                     if !matches!(
                         browser,
@@ -156,8 +158,8 @@ impl eframe::App for WebShell {
         }
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.app.raw_input_hook(ctx, raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

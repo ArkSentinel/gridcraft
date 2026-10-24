@@ -70,7 +70,7 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                 app.run_or_alert("sheet.next", json!({}));
             }
             let all = crate::widgets::icon_button(ui, Icon::SheetList, t.text_dim, app.ui.language.tr("All sheets"), vec2(24.0, 24.0));
-            all.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, app.ui.language.tr("All sheets")));
+            all.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, app.ui.language.tr("All sheets")));
             let items = app.session.active().map(|d| navigator_items(&d.wb.sheets)).unwrap_or_default();
             let active = app.session.active().map(|d| d.wb.active_sheet.to_string()).unwrap_or_default();
             let rows: Vec<(&str, String)> = items.iter().map(|(i, name)| (i.as_str(), name.clone())).collect();
@@ -94,8 +94,8 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
             let tabs_width = (ui.available_width() * 0.6).max(100.0);
             // Reveal the selected sheet after navigation or layout changes, but
             // allow browsing other tabs without snapping back on every frame.
-            let reveal_key = egui::Id::new((d.uid, d.wb.active_sheet, &sheets, tabs_width.to_bits()));
-            let reveal_id = ui.id().with("worksheet_tabs_reveal");
+            let reveal_key = egui::Id::unique((d.uid, d.wb.active_sheet, &sheets, tabs_width.to_bits()));
+            let reveal_id = ui.scope_id().with("worksheet_tabs_reveal");
             let reveal_active = ui.ctx().data_mut(|data| {
                 let changed = data.get_temp::<egui::Id>(reveal_id) != Some(reveal_key);
                 data.insert_temp(reveal_id, reveal_key);
@@ -154,8 +154,9 @@ pub fn sheet_tabs(app: &mut SheetApp, ui: &mut Ui) {
                                 if renaming {
                                     let mut text = app.grid.rename_text.clone();
                                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(6.0, 5.0))));
-                                    let ed =
-                                        child.add(egui::TextEdit::singleline(&mut text).font(theme::ui_font(13.0)).desired_width(r.width() - 12.0));
+                                    let ed = child
+                                        .add(egui::TextEdit::singleline(&mut text).font(theme::ui_font(13.0)).desired_width(r.width() - 12.0))
+                                        .accessible_name(app.ui.language.tr("Sheet Name"));
                                     app.grid.rename_text = text.clone();
                                     if rename_needs_focus(ed.has_focus(), ed.lost_focus()) {
                                         ed.request_focus();
@@ -310,6 +311,7 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
                     }
                     let mut z = zoom as f32;
                     let slider = ui.add(egui::Slider::new(&mut z, 10.0..=400.0).show_value(false).logarithmic(true));
+                    ui.ctx().accesskit_node_builder(slider.id, |node| node.set_label(app.ui.language.tr("Zoom")));
                     if slider.changed() {
                         let _ = app.session.run("view.zoom", json!({"percent": z.round()}));
                     }

@@ -260,7 +260,7 @@ fn save(app: &mut SheetApp, out: &mut Outcome) {
 
 fn nav_item(ui: &mut Ui, icon: Icon, label: &str, selected: bool, text: Color32, sel: Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(NAV_W, 38.0), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     let p = ui.painter();
     if selected {
         p.rect_filled(rect, 0.0, sel);
@@ -297,7 +297,7 @@ fn dim(ui: &mut Ui, text: &str) {
 fn tile(ui: &mut Ui, label: &str, sample: Option<usize>) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(150.0, 140.0), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let p = ui.painter();
     let thumb = Rect::from_min_size(rect.min, vec2(rect.width(), 104.0));
     p.rect_filled(thumb, 4.0, t.grid_bg);
@@ -388,7 +388,7 @@ fn recent_list(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Ou
     for path in app.ui.recent.iter().take(limit).cloned().collect::<Vec<_>>() {
         let (name, folder) = split_path(&path);
         let (rect, resp) = ui.allocate_exact_size(vec2(width, 44.0), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
         let p = ui.painter();
         if resp.hovered() {
             p.rect_filled(rect, 4.0, t.hover);
@@ -514,7 +514,7 @@ fn action_row(ui: &mut Ui, icon: Icon, title: &str, detail: &str) -> egui::Respo
     let t = Tokens::get(ui.ctx());
     let width = ui.available_width().min(CONTENT_W);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 56.0), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
     let p = ui.painter();
     if resp.hovered() {
         p.rect_filled(rect, 4.0, t.hover);
@@ -529,7 +529,7 @@ fn action_row(ui: &mut Ui, icon: Icon, title: &str, detail: &str) -> egui::Respo
 fn square_button(ui: &mut Ui, icon: Icon, label: &str) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(96.0, 88.0), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let p = ui.painter();
     p.rect_filled(rect, 6.0, if resp.hovered() { t.hover } else { t.ribbon });
     p.rect_stroke(rect, 6.0, Stroke::new(1.0, if resp.hovered() { t.accent } else { t.ribbon_border }), StrokeKind::Inside);
@@ -643,13 +643,13 @@ fn info(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage) {
         ui.end_row();
         for (i, (key, label)) in PROPERTIES.iter().enumerate() {
             let (Some(draft), Some(saved)) = (bs.props.get_mut(i), current.get(i)) else { continue };
-            ui.label(RichText::new(lang.tr(label)).color(t.text_dim));
+            let label = ui.label(RichText::new(lang.tr(label)).color(t.text_dim));
             let id = ui.make_persistent_id(("backstage_prop", *key));
             // Show the workbook's value unless the field is being edited (undo, another window).
             if !ui.ctx().memory(|m| m.has_focus(id)) {
                 draft.clone_from(saved);
             }
-            let resp = ui.add(egui::TextEdit::singleline(draft).id(id).desired_width(360.0));
+            let resp = ui.add(egui::TextEdit::singleline(draft).id(id).desired_width(360.0)).labelled_by(label.id);
             if resp.lost_focus() && draft != saved {
                 let mut params = serde_json::Map::new();
                 params.insert((*key).to_string(), json!(draft.clone()));
@@ -667,14 +667,19 @@ fn save_as(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcom
     let fmt = bs.save_format;
     let current = SAVE_TYPES.iter().find(|(ext, _)| *ext == fmt).map_or("Excel Workbook (*.xlsx)", |(_, label)| *label);
     ui.horizontal(|ui| {
-        ui.label(lang.tr("Save as type"));
-        egui::ComboBox::from_id_salt("backstage_save_type").width(280.0).selected_text(lang.tr(current)).show_ui(ui, |ui| {
-            for (ext, label) in SAVE_TYPES {
-                if ui.selectable_label(fmt == ext, lang.tr(label)).clicked() {
-                    bs.save_format = ext;
+        let label = ui.label(lang.tr("Save as type"));
+        egui::ComboBox::from_id_salt("backstage_save_type")
+            .width(280.0)
+            .selected_text(lang.tr(current))
+            .show_ui(ui, |ui| {
+                for (ext, label) in SAVE_TYPES {
+                    if ui.selectable_label(fmt == ext, lang.tr(label)).clicked() {
+                        bs.save_format = ext;
+                    }
                 }
-            }
-        });
+            })
+            .response
+            .labelled_by(label.id);
     });
     ui.add_space(14.0);
     // Desktop: the system Save dialog. Web: the file downloads.
@@ -728,14 +733,19 @@ fn print(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome)
             }
             ui.add_space(16.0);
             let scope = if bs.print_all { "Print Entire Workbook" } else { "Print Active Sheets" };
-            egui::ComboBox::from_id_salt("backstage_print_scope").width(230.0).selected_text(lang.tr(scope)).show_ui(ui, |ui| {
-                for (all, label) in [(false, "Print Active Sheets"), (true, "Print Entire Workbook")] {
-                    if ui.selectable_label(bs.print_all == all, lang.tr(label)).clicked() {
-                        bs.print_all = all;
-                        bs.preview_page = 0;
+            egui::ComboBox::from_id_salt("backstage_print_scope")
+                .width(230.0)
+                .selected_text(lang.tr(scope))
+                .show_ui(ui, |ui| {
+                    for (all, label) in [(false, "Print Active Sheets"), (true, "Print Entire Workbook")] {
+                        if ui.selectable_label(bs.print_all == all, lang.tr(label)).clicked() {
+                            bs.print_all = all;
+                            bs.preview_page = 0;
+                        }
                     }
-                }
-            });
+                })
+                .response
+                .accessible_name(lang.tr("Print What"));
             ui.add_space(8.0);
             if ui.checkbox(&mut bs.fit_to_page, lang.tr("Fit Sheet on One Page")).changed() {
                 bs.preview_page = 0;
@@ -939,29 +949,39 @@ fn options(app: &mut SheetApp, ui: &mut Ui) {
     let lang = app.ui.language;
     section(ui, lang, "Options|General");
     egui::Grid::new("backstage_options_general").num_columns(2).spacing(vec2(18.0, 10.0)).show(ui, |ui| {
-        ui.label(lang.tr("Display theme"));
+        let label = ui.label(lang.tr("Display theme"));
         let mode = app.ui.theme_mode();
         let current = match mode {
             "system" => "System",
             "dark" => "Dark",
             _ => "Light",
         };
-        egui::ComboBox::from_id_salt("backstage_theme").width(160.0).selected_text(lang.tr(current)).show_ui(ui, |ui| {
-            for (value, label) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
-                if ui.selectable_label(mode == value, lang.tr(label)).clicked() {
-                    app.run_or_alert("view.theme", json!({"mode": value}));
+        egui::ComboBox::from_id_salt("backstage_theme")
+            .width(160.0)
+            .selected_text(lang.tr(current))
+            .show_ui(ui, |ui| {
+                for (value, label) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
+                    if ui.selectable_label(mode == value, lang.tr(label)).clicked() {
+                        app.run_or_alert("view.theme", json!({"mode": value}));
+                    }
                 }
-            }
-        });
+            })
+            .response
+            .labelled_by(label.id);
         ui.end_row();
-        ui.label(lang.tr("Interface language"));
-        egui::ComboBox::from_id_salt("backstage_language").width(160.0).selected_text(lang.name()).show_ui(ui, |ui| {
-            for l in i18n::Language::for_picker() {
-                if ui.selectable_label(l == lang, l.name()).clicked() {
-                    app.run_or_alert("app.language.set", json!({"language": l.code()}));
+        let label = ui.label(lang.tr("Interface language"));
+        egui::ComboBox::from_id_salt("backstage_language")
+            .width(160.0)
+            .selected_text(lang.name())
+            .show_ui(ui, |ui| {
+                for l in i18n::Language::for_picker() {
+                    if ui.selectable_label(l == lang, l.name()).clicked() {
+                        app.run_or_alert("app.language.set", json!({"language": l.code()}));
+                    }
                 }
-            }
-        });
+            })
+            .response
+            .labelled_by(label.id);
         ui.end_row();
     });
     ui.add_space(6.0);

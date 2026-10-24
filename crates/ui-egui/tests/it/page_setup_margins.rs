@@ -11,7 +11,7 @@ fn margins(app: &SheetApp) -> [f32; 6] {
 fn app_with_custom_margins() -> SheetApp {
     let mut session = Session::new();
     session.new_workbook();
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     app.run("pageLayout.margins", json!({"left": 2.0, "right": 2.5, "top": 3.0, "bottom": 0.25, "header": 0.1, "footer": 0.2})).unwrap();
     assert_eq!(margins(&app), [2.0, 2.5, 3.0, 0.25, 0.1, 0.2]);
     app

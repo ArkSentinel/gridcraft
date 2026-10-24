@@ -10,12 +10,12 @@ use serde_json::{Value as Json, json};
 fn harness() -> egui_kittest::Harness<'static, SheetApp> {
     let mut session = Session::new();
     session.new_workbook();
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
+    let mut h = crate::common::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut SheetApp| {
             app.logic(&ui.ctx().clone());
             app.ui(ui);
         },
-        SheetApp::new(session, Default::default()),
+        crate::common::app(session),
     );
     h.run_steps(6);
     h
@@ -37,7 +37,7 @@ fn dialog_offers_copy_action_and_runs_unique_extract() {
     h.run_steps(6);
     h.get_by_label("Copy matching rows elsewhere").click();
     h.run_steps(6);
-    let rect = h.ctx.memory(|m| m.area_rect(egui::Id::new("dialog").with("advancedFilter"))).unwrap();
+    let rect = h.ctx.memory(|m| m.area_rect(egui::Id::unique("dialog").with("advancedFilter"))).unwrap();
     assert!(rect.width() < 500.0 && rect.height() < 400.0, "dialog must fit its controls: {rect:?}");
     assert!(
         h.state()

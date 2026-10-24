@@ -168,13 +168,17 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
             if ui.button(lang.tr("Calculated Field…")).clicked() {
                 app.run_or_alert("pivot.calculatedField", json!({"pivot": name}));
             }
-            egui::ComboBox::from_id_salt("pv_layout").selected_text(lang.tr("Report Layout")).show_ui(ui, |ui| {
-                for (l, v) in [("Compact", "compact"), ("Outline", "outline"), ("Tabular", "tabular")] {
-                    if ui.button(lang.tr(l)).clicked() {
-                        app.run_or_alert("pivot.layout", json!({"pivot": name, "layout": v}));
+            egui::ComboBox::from_id_salt("pv_layout")
+                .selected_text(lang.tr("Report Layout"))
+                .show_ui(ui, |ui| {
+                    for (l, v) in [("Compact", "compact"), ("Outline", "outline"), ("Tabular", "tabular")] {
+                        if ui.button(lang.tr(l)).clicked() {
+                            app.run_or_alert("pivot.layout", json!({"pivot": name, "layout": v}));
+                        }
                     }
-                }
-            });
+                })
+                .response
+                .accessible_name(lang.tr("Report Layout"));
         });
         let _: Option<Json> = None;
     });

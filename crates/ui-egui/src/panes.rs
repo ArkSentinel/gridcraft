@@ -79,7 +79,7 @@ fn comments(app: &mut SheetApp, ui: &mut Ui) {
                 for (a, txt) in &c.replies {
                     ui.label(egui::RichText::new(format!("↳ {a}: {txt}")).color(Color32::from_gray(60)));
                 }
-                let key = egui::Id::new(("reply", &cell));
+                let key = egui::Id::unique(("reply", &cell));
                 let mut draft: String = ui.ctx().data_mut(|m| m.get_temp(key)).unwrap_or_default();
                 // Buttons first, right to left, so the reply field gets exactly the width they leave:
                 // a field sized by a guess wider than the row pushes the resizable pane wider every frame.
@@ -125,7 +125,7 @@ fn watch(app: &mut SheetApp, ui: &mut Ui) {
             ui.label(&cell);
             ui.label(w["value"].as_str().unwrap_or(""));
             ui.label(w["formula"].as_str().unwrap_or(""));
-            if ui.small_button("✕").clicked() {
+            if crate::widgets::icon_button(ui, crate::icons::Icon::Close, Tokens::get(ui.ctx()).text_dim, "Delete", vec2(18.0, 18.0)).clicked() {
                 let _ = app.session.run("formulas.watchWindow", json!({"remove": cell}));
             }
             ui.end_row();
@@ -153,7 +153,7 @@ fn selection(app: &mut SheetApp, ui: &mut Ui) {
             if ui.small_button("▼").on_hover_text("Send Backward").clicked() {
                 app.run_or_alert("arrange.sendBackward", json!({"kind": kind, "id": id}));
             }
-            if ui.small_button("✕").on_hover_text("Delete").clicked() {
+            if crate::widgets::icon_button(ui, crate::icons::Icon::Close, Tokens::get(ui.ctx()).text_dim, "Delete", vec2(18.0, 18.0)).clicked() {
                 app.run_or_alert("object.delete", json!({"kind": kind, "id": id}));
             }
         });
@@ -171,7 +171,7 @@ fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
     };
     let theme = app.session.active().map(|d| d.wb.theme.clone()).unwrap_or_default();
     ui.collapsing("Chart Title", |ui| {
-        let field = egui::Id::new(("gridcraft.chart_title", id));
+        let field = egui::Id::unique(("gridcraft.chart_title", id));
         if let Some(title) = crate::widgets::committed_text(ui, field, chart.title.as_deref().unwrap_or(""), None) {
             app.run_or_alert("chart.set", json!({"chart": id, "title": title}));
         }
@@ -216,14 +216,14 @@ fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
         }
         ui.horizontal(|ui| {
             ui.label("Horizontal axis title:");
-            let field = egui::Id::new(("gridcraft.chart_x_title", id));
+            let field = egui::Id::unique(("gridcraft.chart_x_title", id));
             if let Some(xt) = crate::widgets::committed_text(ui, field, chart.x_title.as_deref().unwrap_or(""), None) {
                 app.run_or_alert("chart.set", json!({"chart": id, "xTitle": if xt.is_empty() { Json::Null } else { json!(xt) }}));
             }
         });
         ui.horizontal(|ui| {
             ui.label("Vertical axis title:");
-            let field = egui::Id::new(("gridcraft.chart_y_title", id));
+            let field = egui::Id::unique(("gridcraft.chart_y_title", id));
             if let Some(yt) = crate::widgets::committed_text(ui, field, chart.y_title.as_deref().unwrap_or(""), None) {
                 app.run_or_alert("chart.set", json!({"chart": id, "yTitle": if yt.is_empty() { Json::Null } else { json!(yt) }}));
             }
@@ -270,7 +270,7 @@ fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
     });
     ui.collapsing("Size", |ui| {
         // Keep the value being typed or dragged between frames; reloading it from the chart every frame threw the edit away.
-        let draft = egui::Id::new(("gridcraft.chart_size_draft", id));
+        let draft = egui::Id::unique(("gridcraft.chart_size_draft", id));
         let (mut w, mut h) = ui.data_mut(|d| d.get_temp::<(f32, f32)>(draft)).unwrap_or((chart.anchor.width, chart.anchor.height));
         let a = ui.add(egui::DragValue::new(&mut w).prefix("Width ").range(40.0..=4000.0));
         let b = ui.add(egui::DragValue::new(&mut h).prefix("Height ").range(40.0..=4000.0));

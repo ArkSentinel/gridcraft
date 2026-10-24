@@ -10,12 +10,12 @@ use serde_json::json;
 fn dark_theme_fills_the_strip_right_of_the_last_column_heading() {
     let mut session = Session::new();
     session.new_workbook();
-    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+    let mut h = crate::common::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut SheetApp| {
             app.logic(ui.ctx());
             app.ui(ui);
         },
-        SheetApp::new(session, Default::default()),
+        crate::common::app(session),
     );
     h.state_mut().run("view.theme", json!({"mode": "dark"})).unwrap();
     h.run_steps(6);

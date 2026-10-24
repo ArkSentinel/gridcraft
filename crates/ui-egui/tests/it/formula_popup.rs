@@ -21,7 +21,7 @@ fn frames(ctx: &Context, app: &mut SheetApp) {
 }
 
 fn visible(ctx: &Context, editor: &str) -> bool {
-    ctx.memory(|m| m.areas().is_visible(&LayerId::new(Order::Tooltip, Id::new(editor).with("ac"))))
+    ctx.memory(|m| m.areas().is_visible(&LayerId::new(Order::Tooltip, Id::unique(editor).with("ac"))))
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn cell_formula_helpers_hide_when_scrolled_out_and_return_with_the_editor() {
         let ctx = Context::default();
         let mut session = Session::new();
         session.new_workbook();
-        let mut app = SheetApp::new(session, Default::default());
+        let mut app = crate::common::app(session);
         frames(&ctx, &mut app);
         app.begin_edit(Some(text.into()), false);
         if text == "=SU" {
@@ -48,12 +48,50 @@ fn cell_formula_helpers_hide_when_scrolled_out_and_return_with_the_editor() {
     }
 }
 
+/// A wrapped in-cell edit in a hidden row/column must not paint (or show its helper) over the
+/// visible line; the edit survives and comes back when the row and column are shown again.
+#[test]
+fn hidden_row_and_column_hide_the_wrapped_editor_until_unhidden() {
+    let ctx = Context::default();
+    let mut session = Session::new();
+    session.new_workbook();
+    session.run("home.wrapText", serde_json::json!({"range": "A2", "on": true})).unwrap();
+    session.run("home.hideRows", serde_json::json!({"rows": "2:2"})).unwrap();
+    session.run("home.hideColumns", serde_json::json!({"cols": "A:A"})).unwrap();
+    session.run("selection.set", serde_json::json!({"range": "A2"})).unwrap();
+    let mut app = crate::common::app(session);
+    frames(&ctx, &mut app);
+    app.begin_edit(Some("=SUM(".into()), false);
+    frames(&ctx, &mut app);
+    assert!(!visible(&ctx, "gridcraft.cell_editor"), "a hidden cell must not show its helper");
+    assert_eq!(app.editor.as_ref().unwrap().text, "=SUM(", "hiding the cell preserves the edit");
+    let cells = app.grid.cells_rect.expect("the grid drew");
+    assert!(!paints_visible_text(&frame(&ctx, &mut app), "=SUM(", cells), "a hidden cell must not paint its editor");
+
+    app.session.run("home.unhideRows", serde_json::json!({"rows": "2:2"})).unwrap();
+    app.session.run("home.unhideColumns", serde_json::json!({"cols": "A:A"})).unwrap();
+    frames(&ctx, &mut app);
+    assert!(visible(&ctx, "gridcraft.cell_editor"), "unhiding the cell restores its helper");
+    assert!(paints_visible_text(&frame(&ctx, &mut app), "=SUM(", cells), "unhiding the cell restores its editor");
+    assert_eq!(app.editor.as_ref().unwrap().text, "=SUM(", "unhiding the cell preserves the edit");
+}
+
+/// Whether `text` is painted with a non-empty clip that reaches the worksheet (a hidden cell's
+/// editor may still be in the shape list, clipped to nothing; the formula bar shows the same text
+/// above the grid and must not satisfy this check).
+fn paints_visible_text(output: &egui::FullOutput, text: &str, cells: Rect) -> bool {
+    output
+        .shapes
+        .iter()
+        .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == text && s.clip_rect.intersect(t.visual_bounding_rect()).intersect(cells).is_positive()))
+}
+
 #[test]
 fn formula_bar_hint_remains_visible_when_the_worksheet_scrolls() {
     let ctx = Context::default();
     let mut session = Session::new();
     session.new_workbook();
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     frames(&ctx, &mut app);
     app.begin_edit(Some("=SUM(".into()), true);
     frames(&ctx, &mut app);
@@ -68,7 +106,7 @@ fn cell_argument_hint_is_clipped_to_the_worksheet() {
     let ctx = Context::default();
     let mut session = Session::new();
     session.new_workbook();
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     frames(&ctx, &mut app);
     app.begin_edit(Some("=SUM(".into()), false);
     frames(&ctx, &mut app);
@@ -85,7 +123,7 @@ fn scrolled_out_cell_editor_still_handles_escape() {
     let ctx = Context::default();
     let mut session = Session::new();
     session.new_workbook();
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     frames(&ctx, &mut app);
     app.begin_edit(Some("=SUM(".into()), false);
     frames(&ctx, &mut app);
@@ -116,7 +154,7 @@ fn cell_editor_and_helper_stay_below_the_frozen_top_row() {
     session.new_workbook();
     session.run("view.freezeTopRow", serde_json::json!({})).unwrap();
     session.run("selection.set", serde_json::json!({"range": "B5"})).unwrap();
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     frames(&ctx, &mut app);
     let sh = app.session.active().unwrap().wb.active().unwrap();
     let frozen_h = sh.row_height(0);
@@ -136,6 +174,18 @@ fn cell_editor_and_helper_stay_below_the_frozen_top_row() {
     assert!(editor.clip_rect.top() >= frozen_bottom, "editor must be clipped below the frozen row: {:?}", editor.clip_rect);
     app.view_mut().unwrap().scroll.y = scroll;
     frames(&ctx, &mut app);
+    let geo = app.grid.geo.as_ref().expect("grid drew");
+    let sh = app.session.active().unwrap().wb.active().unwrap();
+    let edited = gridcraft_engine::core::CellRef::new(4, 1);
+    assert!(
+        geo.hidden_under_frozen(sh, edited),
+        "B5 must be scrolled fully under the frozen row: requested {scroll}, kept {:?}, geo scroll {:?}, cells {:?}, frozen_h {}, cell {:?}",
+        app.view().scroll,
+        geo.scroll,
+        geo.cells,
+        geo.frozen_h,
+        geo.cell_rect(sh, edited)
+    );
     assert!(!visible(&ctx, "gridcraft.cell_editor"), "cell hidden under the frozen row must hide its helper");
     assert_eq!(app.editor.as_ref().unwrap().text, "=SUM(");
     app.view_mut().unwrap().scroll.y = 0.0;
@@ -149,7 +199,7 @@ fn argument_hint_shows_the_function_description() {
     let ctx = Context::default();
     let mut session = Session::new();
     session.new_workbook();
-    let mut app = SheetApp::new(session, Default::default());
+    let mut app = crate::common::app(session);
     frames(&ctx, &mut app);
     app.begin_edit(Some("=DATEDIF(A1,B1,".into()), false);
     frames(&ctx, &mut app);

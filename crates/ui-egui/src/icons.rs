@@ -192,6 +192,17 @@ pub const YELLOW: Color32 = Color32::from_rgb(0xF2, 0xC3, 0x2E);
 pub const ORANGE: Color32 = Color32::from_rgb(0xE8, 0x7D, 0x2B);
 pub const PURPLE: Color32 = Color32::from_rgb(0x88, 0x55, 0xC8);
 
+/// The code-drawn icon that stands in for a character the current fonts cannot draw (`✕` and
+/// `✓` have no bundled egui face). Interface chrome uses this instead of painting a tofu box; a
+/// workbook cell still needs a real glyph because its characters are user data.
+pub fn fallback_for_symbol(c: char) -> Option<Icon> {
+    match c {
+        '✕' => Some(Icon::Close),
+        '✓' => Some(Icon::Check),
+        _ => None,
+    }
+}
+
 /// Draws `icon` into `rect` (square-ish), in colour `c`.
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, c: Color32) {
     let side = rect.width().min(rect.height());

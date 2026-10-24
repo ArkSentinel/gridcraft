@@ -207,6 +207,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "페이지 나누기\n미리 보기",
         "Page\nLayout" => "페이지\n레이아웃",
         "Formula Bar" => "수식 입력줄",
+        "Name Box" => "이름 상자",
+        "Cell Editor" => "셀 편집기",
+        "Font Size" => "글꼴 크기",
         "Gridlines" => "눈금선",
         "Headings" => "머리글",
         "Zoom" => "확대/축소",
@@ -306,6 +309,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "어둡게",
         "Sheet Options|View" => "화면",
         "Print" => "인쇄",
+        "Print What" => "인쇄할 내용",
         // Page Layout view and the Header & Footer tab.
         "Click to add data" => "클릭하여 데이터 추가",
         "Add header" => "머리글 추가",
@@ -433,6 +437,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "다음 시트",
         "All sheets" => "모든 시트",
         "New sheet (⇧F11)" => "새 시트 (⇧F11)",
+        "Text Box" => "텍스트 상자",
         _ => return None,
     })
 }

@@ -190,6 +190,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Seitenumbruch-\nvorschau",
         "Page\nLayout" => "Seiten-\nlayout",
         "Formula Bar" => "Formelleiste",
+        "Name Box" => "Namensfeld",
+        "Cell Editor" => "Zelleneditor",
+        "Font Size" => "Schriftgröße",
         "Gridlines" => "Gitternetzlinien",
         "Headings" => "Überschriften",
         "Zoom" => "Zoom",
@@ -421,6 +424,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "Dunkel",
         "Sheet Options|View" => "Anzeige",
         "Print" => "Drucken",
+        "Print What" => "Was drucken",
         // grid.rs cell and row/column header context menus.
         "Cut" => "Ausschneiden",
         "Copy" => "Kopieren",
@@ -449,6 +453,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "Nächstes Blatt",
         "All sheets" => "Alle Blätter",
         "New sheet (⇧F11)" => "Neues Blatt (⇧F11)",
+        "Text Box" => "Textfeld",
         _ => return None,
     })
 }

@@ -10,13 +10,13 @@ use gridcraft_ui_egui::{Services, SheetApp};
 fn harness(services: Services) -> egui_kittest::Harness<'static, SheetApp> {
     let mut session = Session::new();
     session.new_workbook();
-    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+    let mut h = crate::common::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut SheetApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
             app.ui(ui);
         },
-        SheetApp::new(session, services),
+        crate::common::prepare(SheetApp::new(session, services)),
     );
     h.run_steps(4);
     h
@@ -115,12 +115,15 @@ fn file_options_opens_the_options_page_and_pages_are_reachable_by_command() {
     let r = h.state_mut().run("file.options", serde_json::json!({})).unwrap();
     assert_eq!(r["calculation"]["mode"], "automatic");
     h.run_steps(3);
+    h.check_accessibility();
     assert_eq!(page(&h), Some("options"));
     click(&mut h, "Info");
+    h.check_accessibility();
     assert_eq!(page(&h), Some("info"));
     for id in ["print", "export", "saveAs", "new", "open", "home"] {
         h.state_mut().run("ui.backstage", serde_json::json!({"page": id})).unwrap();
         h.run_steps(2);
+        h.check_accessibility();
         assert_eq!(page(&h), Some(id));
     }
     assert!(h.state_mut().run("ui.backstage", serde_json::json!({"page": "feedback"})).is_err());
@@ -130,6 +133,7 @@ fn file_options_opens_the_options_page_and_pages_are_reachable_by_command() {
     h.state_mut().run("ui.backstage", serde_json::json!({})).unwrap();
     h.run_steps(2);
     click(&mut h, "Back");
+    h.check_accessibility();
     assert!(h.state().backstage.is_none());
 }
 

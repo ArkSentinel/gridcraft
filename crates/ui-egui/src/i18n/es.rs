@@ -189,6 +189,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Vista previa de\nsalto de página",
         "Page\nLayout" => "Diseño\nde página",
         "Formula Bar" => "Barra de fórmulas",
+        "Name Box" => "Cuadro de nombre",
+        "Cell Editor" => "Editor de celda",
+        "Font Size" => "Tamaño de fuente",
         "Gridlines" => "Líneas de cuadrícula",
         "Headings" => "Encabezados",
         "Zoom" => "Zoom",
@@ -418,6 +421,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "Oscuro",
         "Sheet Options|View" => "Ver",
         "Print" => "Imprimir",
+        "Print What" => "Qué imprimir",
         "PivotTable Fields" => "Campos de tabla dinámica",
         "Choose fields to add to report:" => "Seleccione los campos para agregar al informe:",
         "Use a field's menu to move it between areas:" => "Use el menú de un campo para moverlo entre áreas:",
@@ -465,6 +469,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "Hoja siguiente",
         "All sheets" => "Todas las hojas",
         "New sheet (⇧F11)" => "Nueva hoja (⇧F11)",
+        "Text Box" => "Cuadro de texto",
         _ => return None,
     })
 }

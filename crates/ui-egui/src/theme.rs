@@ -1,13 +1,36 @@
 //! Design tokens and fonts.
 //!
-//! Colours are our own, tuned to read like a modern desktop spreadsheet. Fonts come from the
-//! operating system at runtime (nothing bundled): the UI uses the platform UI font, cells use the
-//! best available match for the workbook font (Calibri/Carlito/Aptos/Arial…) with egui's built-in
-//! fonts as the last resort.
+//! Colours are our own, tuned to read like a modern desktop spreadsheet. Fonts come from egui's
+//! bundled faces and the operating system at runtime: the UI uses the platform UI font, cells use
+//! the best available match for the workbook font (Calibri/Carlito/Aptos/Arial…), and egui's
+//! bundled Ubuntu/Hack/egui-icons and monochrome emoji faces are the last resort. A build with
+//! `CRAFT_FONTS_DIR` also embeds the permitted OFL craft-fonts faces (barred Adobe/Source/Noto CJK
+//! families never enter it, and a web build keeps only its explicit allowlist). Native builds opt
+//! into craft-fonts' OFL LXGW Chinese face, so a host without a Han system face still draws Chinese
+//! interface text; no font file is stored in this repo.
 
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+use egui::epaint::text::Blob;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Visuals};
+
+/// A font from the optional craft-fonts build input (`CRAFT_FONTS_DIR` at build time; see
+/// <https://github.com/storytold/craft-fonts> and its `docs/integration.md`). The slice is empty
+/// when the app is built without the checkout; nothing is downloaded and no font is in this repo.
+#[derive(Debug)]
+pub struct CraftFont {
+    pub family: &'static str,
+    pub style: &'static str,
+    /// ISO 15924 scripts the family is intended for, from the craft-fonts manifest.
+    pub scripts: &'static [&'static str],
+    pub bytes: &'static [u8],
+}
+
+mod craft_fonts {
+    use super::CraftFont;
+    include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
@@ -243,43 +266,40 @@ pub(crate) fn font_parses(bytes: &[u8], index: u32) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn try_load(paths: &[(&str, u32)]) -> Option<FontData> {
     for (p, index) in paths {
-        if let Some(bytes) = font_file(p, *index) {
-            let mut fd = FontData::from_static(bytes);
-            fd.index = *index;
-            return Some(fd);
+        if let Some(blob) = font_file(p, *index) {
+            return Some(FontData::from_blob(blob, *index));
         }
     }
     None
 }
 
-/// The interface and script fallback font files, each read once per run and kept for the rest of
-/// it. egui copies an owned font's bytes into its text engine and keeps the original too
-/// (`epaint`'s `blob_from_font_data`), so every one of these files was in memory twice, about
-/// 100 MB on a Mac; bytes it borrows for `'static` it shares instead. These faces are loaded by
-/// every font rebuild for as long as the app runs, so keeping them costs nothing, and rebuilds no
-/// longer read them from disk again. Only a file that parses is kept: a missing or broken one is
-/// looked for again next time.
+/// The interface and script fallback font files, each read once per run and kept as a shared
+/// `Blob` for the rest of it. egui shares the blob instead of copying the file into its text
+/// engine, because every one of these files is loaded by every font rebuild for as long as the
+/// app runs. Only a file that parses is kept: a missing or broken one is looked for again next
+/// time.
 #[cfg(not(target_arch = "wasm32"))]
-fn font_file(path: &str, index: u32) -> Option<&'static [u8]> {
-    static FILES: std::sync::Mutex<std::collections::BTreeMap<String, &'static [u8]>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+fn font_file(path: &str, index: u32) -> Option<Blob> {
+    static FILES: std::sync::Mutex<std::collections::BTreeMap<String, Blob>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
     let mut files = FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(&bytes) = files.get(path) {
-        return font_parses(bytes, index).then_some(bytes);
+    if let Some(blob) = files.get(path) {
+        let bytes: &[u8] = (**blob).as_ref();
+        return font_parses(bytes, index).then(|| std::sync::Arc::clone(blob));
     }
     let bytes = std::fs::read(path).ok()?;
     if !font_parses(&bytes, index) {
         log::warn!("skipping font {path} (face {index}): not a font file egui can read");
         return None;
     }
-    let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-    files.insert(path.to_string(), bytes);
-    Some(bytes)
+    let blob: Blob = std::sync::Arc::new(bytes);
+    files.insert(path.to_string(), blob.clone());
+    Some(blob)
 }
 
 /// Last line of defence before [`FontDefinitions`] reach egui: drops every face epaint could not
 /// parse (and its key from every family), so a bad font costs a fallback, never a crash.
 pub(crate) fn drop_unparseable_fonts(fonts: &mut FontDefinitions) {
-    let bad: Vec<String> = fonts.font_data.iter().filter(|(_, fd)| !font_parses(&fd.font, fd.index)).map(|(k, _)| k.clone()).collect();
+    let bad: Vec<String> = fonts.font_data.iter().filter(|(_, fd)| !font_parses(fd.bytes(), fd.index)).map(|(k, _)| k.clone()).collect();
     for key in &bad {
         log::warn!("dropping font {key:?}: egui can't parse it");
         fonts.font_data.remove(key);
@@ -289,6 +309,90 @@ pub(crate) fn drop_unparseable_fonts(fonts: &mut FontDefinitions) {
             chain.retain(|k| !bad.contains(k));
         }
     }
+}
+
+/// egui's bundled monospace face, used as the last-resort symbol fallback (see `Hack-Regular.ttf`
+/// in `epaint_default_fonts`). It is present whenever egui is built with `default_fonts`.
+const HACK: &str = "Hack";
+
+/// The permitted craft-fonts faces with their `FontDefinitions` keys, in manifest order. Empty
+/// without a `CRAFT_FONTS_DIR` checkout at build time. The filter is repeated here so a stale
+/// generated table can never smuggle in a barred face or a web-build face outside the allowlist.
+fn craft_font_faces() -> Vec<(String, &'static CraftFont)> {
+    let wasm = cfg!(target_arch = "wasm32");
+    craft_fonts::CRAFT_FONTS
+        .iter()
+        .enumerate()
+        .filter(|(_, font)| !crate::craft_fonts_policy::barred(font.family))
+        .filter(|(_, font)| !wasm || crate::craft_fonts_policy::web_allowed(font.family, font.style))
+        .map(|(i, font)| (format!("craft-{i}-{}-{}", font.family, font.style), font))
+        .collect()
+}
+
+/// Adds the optional craft-fonts faces to `fonts` and returns their keys.
+fn add_craft_fonts(fonts: &mut FontDefinitions) -> Vec<String> {
+    let mut keys = Vec::new();
+    for (key, font) in craft_font_faces() {
+        fonts.font_data.insert(key.clone(), Arc::new(FontData::from_static(font.bytes)));
+        keys.push(key);
+    }
+    keys
+}
+
+/// Whether the optional craft-fonts input was embedded in this build.
+pub fn craft_fonts_loaded() -> bool {
+    !craft_fonts::CRAFT_FONTS.is_empty()
+}
+
+/// Whether the native-only Simplified Chinese craft face (LXGW WenKai Lite) was embedded. A web
+/// build or an older craft-fonts checkout without `fonts/simplified-chinese-manifest.txt` has none.
+pub fn chinese_font_loaded() -> bool {
+    craft_font_faces().iter().any(|(_, f)| f.family == "LXGW WenKai Lite" && f.style == "Regular")
+}
+
+/// Whether this build was made with `CRAFT_FONTS_REQUIRED=1`. Acceptance tests must fail rather
+/// than skip when this is true and the faces are absent.
+pub fn craft_fonts_required() -> bool {
+    craft_fonts::CRAFT_FONTS_REQUIRED
+}
+
+/// A bundled-face character with the same meaning as `c`, for interface chrome whose exact symbol
+/// no bundled face has (`✕`, `✓`, `⌃`). Document text still needs a real glyph; this is only a
+/// display fallback and never changes the characters a command inserts or stores.
+pub fn symbol_fallback(c: char) -> Option<char> {
+    match c {
+        '✕' => Some('×'),
+        '✓' => Some('✔'),
+        '⌃' => Some('^'),
+        _ => None,
+    }
+}
+
+/// `text` with every character the current font set cannot draw replaced by its semantic fallback
+/// (see [`symbol_fallback`]). Used by chrome tooltips so a host without symbol faces never paints
+/// a tofu box; it is not applied to workbook text.
+pub fn available_text(ui: &egui::Ui, text: &str) -> String {
+    let font = ui_font(13.0);
+    text.chars().map(|c| if ui.ctx().fonts_mut(|f| f.has_glyph(&font, c)) { c } else { symbol_fallback(c).unwrap_or(c) }).collect()
+}
+
+/// The family, style and scripts of every embedded craft-fonts face (empty without the input).
+pub fn craft_font_scripts() -> impl Iterator<Item = (&'static str, &'static str, &'static [&'static str])> {
+    craft_font_faces().into_iter().map(|(_, f)| (f.family, f.style, f.scripts))
+}
+
+/// Whether one embedded craft-fonts face maps every non-whitespace character in `text`. Tests use
+/// this to tell "the pinned fixture covers this script" from "this host has no face for it",
+/// without trusting a manifest script tag alone.
+pub fn craft_fonts_cover(text: &str) -> bool {
+    craft_font_faces().iter().any(|(_, f)| {
+        use skrifa::MetadataProvider;
+        let Ok(font) = skrifa::FontRef::from_index(f.bytes, 0) else {
+            return false;
+        };
+        let map = font.charmap();
+        text.chars().filter(|c| !c.is_whitespace()).all(|c| map.map(c).is_some())
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -451,22 +555,38 @@ pub fn font_definitions_for_language(language: crate::i18n::Language) -> FontDef
     font_definitions_with(language, &[])
 }
 
+/// The bundled faces plus the pinned craft-fonts faces, with no system-font probing or installed
+/// workbook-font binding.
+///
+/// Integration tests use this through their shared harness, so a minimal CI image and a developer
+/// machine see the same font set. Craft-fonts remains a pinned build input rather than a repository
+/// asset; without it only egui's bundled faces are available, which is the documented no-font mode.
+pub fn pinned_font_definitions() -> FontDefinitions {
+    font_definitions_impl(crate::i18n::Language::En, &[], false)
+}
+
 /// [`font_definitions_for_language`] that also binds the workbook fonts in `used` that are
 /// installed, so cells set in them render with them; the rest fall back to the roles. The bound
 /// families are recorded in [`crate::fonts`] so [`cell_family`] only names a family egui has.
 pub fn font_definitions_with(language: crate::i18n::Language, used: &[String]) -> FontDefinitions {
+    font_definitions_impl(language, used, true)
+}
+
+fn font_definitions_impl(language: crate::i18n::Language, used: &[String], system: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let base_prop: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let base_mono: Vec<String> = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
     let mut bound: Vec<String> = Vec::new();
     // The non-Latin fallback faces have to sit at the end of each chain: a Latin font owns Latin,
     // and epaint picks the first face that has the glyph, so they only catch their own scripts.
-    let fallback = load_fallback(&mut fonts, HanOrder::of(language));
+    let fallback = if system { load_fallback(&mut fonts, HanOrder::of(language)) } else { Vec::new() };
+    let hack = fonts.font_data.contains_key(HACK).then_some(HACK);
     for role in [UI, UI_BOLD, CELL, CELL_BOLD, CELL_ITALIC, CELL_BOLD_ITALIC, SERIF, MONO] {
         let paths = candidates(role);
         let refs: Vec<(&str, u32)> = paths.iter().map(|(p, i)| (p.as_str(), *i)).collect();
         let mut chain: Vec<String> = Vec::new();
-        if let Some(mut fd) = try_load(&refs) {
+        let loaded = if system { try_load(&refs) } else { None };
+        if let Some(mut fd) = loaded {
             // Helvetica Neue Bold's own TrueType hints close Cyrillic е into ө at 13 pt on a Retina
             // screen (#1184). Core Text never runs them, so this draws it the way macOS does.
             if cfg!(target_os = "macos") && role == UI_BOLD {
@@ -481,14 +601,25 @@ pub fn font_definitions_with(language: crate::i18n::Language, used: &[String]) -
             chain.push(format!("sys-{CELL}"));
         }
         chain.extend(if role == MONO { base_mono.clone() } else { base_prop.clone() });
+        // egui bundles Hack, a monospace face rich in arrows, triangles and keyboard symbols, but
+        // 0.37 only puts it in the Monospace family. The interface draws ↑, ▲, ▼, ▸, ▾ and ↳ as
+        // text (filter menus, ribbon, keytips), so add it behind the UI/cell and emoji faces; it
+        // only catches characters those do not have.
+        if let Some(hack) = hack
+            && !chain.iter().any(|k| k.as_str() == hack)
+        {
+            chain.push(hack.to_string());
+        }
         chain.extend(fallback.iter().cloned());
         chain.retain(|k| fonts.font_data.contains_key(k));
         fonts.families.insert(FontFamily::Name(role.into()), chain);
         bound.push(role.to_string());
     }
     // Installed workbook fonts, so a cell's chosen font actually renders in it.
-    for family in crate::fonts::installed_among(used) {
-        bound.extend(crate::fonts::bind_family(&mut fonts, &family));
+    if system {
+        for family in crate::fonts::installed_among(used) {
+            bound.extend(crate::fonts::bind_family(&mut fonts, &family));
+        }
     }
     // Interface text (formula bar, name box, dialogs) falls back to the cell font before the
     // script faces: whatever a cell can draw, the formula bar can draw too, even where no script
@@ -507,6 +638,21 @@ pub fn font_definitions_with(language: crate::i18n::Language, used: &[String]) -
     // Default proportional text in widgets uses the UI font.
     if let Some(ui) = fonts.families.get(&FontFamily::Name(UI.into())).cloned() {
         fonts.families.insert(FontFamily::Proportional, ui);
+    }
+    // The optional craft-fonts faces go at the very end of every family: a system or bundled face
+    // that has the script keeps its glyph shapes, while the permitted OFL faces cover scripts and
+    // symbols the host image lacks (Japanese, Korean, Thai, Arabic, Georgian and the UI symbols).
+    // Chinese comes from the native-only OFL LXGW face when embedded; a system Han face still
+    // leads, and the barred Noto CJK collection never enters.
+    let craft = add_craft_fonts(&mut fonts);
+    if !craft.is_empty() {
+        for chain in fonts.families.values_mut() {
+            for key in &craft {
+                if !chain.contains(key) {
+                    chain.push(key.clone());
+                }
+            }
+        }
     }
     drop_unparseable_fonts(&mut fonts);
     // Only families egui still has data for count as bound (a dropped face can empty a chain).
@@ -819,6 +965,12 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         v.widgets.hovered.weak_bg_fill = t.hover;
         v.widgets.active.weak_bg_fill = t.pressed;
         v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.input_border);
+        // 0.37 raises the default widget corner radii; GridCraft keeps its 0.36 shape (#8617).
+        v.widgets.noninteractive.corner_radius = egui::CornerRadius::same(2);
+        v.widgets.inactive.corner_radius = egui::CornerRadius::same(2);
+        v.widgets.hovered.corner_radius = egui::CornerRadius::same(3);
+        v.widgets.active.corner_radius = egui::CornerRadius::same(2);
+        v.widgets.open.corner_radius = egui::CornerRadius::same(2);
         v.window_corner_radius = egui::CornerRadius::same(10);
         v.menu_corner_radius = egui::CornerRadius::same(8);
         v.popup_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 16, spread: 0, color: t.shadow };
@@ -910,11 +1062,81 @@ mod tests {
             }
             for role in [UI, UI_BOLD, CELL, CELL_BOLD, CELL_ITALIC, CELL_BOLD_ITALIC, SERIF, MONO] {
                 let chain = fonts.families.get(&FontFamily::Name(role.into())).map(Vec::as_slice).unwrap_or_default();
-                assert!(chain.len() >= fb_keys.len(), "{role} chain too short for its fallback");
-                let tail = &chain[chain.len() - fb_keys.len()..];
-                assert_eq!(tail, fb_keys.as_slice(), "{role} must end its chain with the fallback faces");
+                // The optional craft-fonts faces follow the system fallbacks at the very end.
+                let end = chain.iter().rposition(|k| !k.starts_with("craft-")).map_or(0, |i| i + 1);
+                assert!(end >= fb_keys.len(), "{role} chain too short for its fallback");
+                assert_eq!(&chain[end - fb_keys.len()..end], fb_keys.as_slice(), "{role} must end its non-craft chain with the fallback faces");
             }
         }
+    }
+
+    #[test]
+    fn craft_fonts_are_the_last_fallback_in_every_family() {
+        // Ordering: app/bundled faces, Hack/emoji, system script fallbacks, permitted craft faces.
+        // A craft face must never displace a system face that already covers a glyph.
+        let fonts = font_definitions_for_language(Language::En);
+        let expected: Vec<String> = craft_font_faces().into_iter().map(|(key, _)| key).collect();
+        if expected.is_empty() {
+            return; // optional input absent
+        }
+        for (family, chain) in &fonts.families {
+            let first = chain.iter().position(|k| k.starts_with("craft-")).unwrap_or(chain.len());
+            assert_eq!(&chain[first..], expected.as_slice(), "{family:?} must end with exactly the permitted craft faces in manifest order");
+        }
+    }
+
+    #[test]
+    fn a_required_native_build_embeds_the_chinese_face() {
+        if cfg!(target_arch = "wasm32") || !craft_fonts_required() {
+            return;
+        }
+        assert!(
+            chinese_font_loaded(),
+            "CRAFT_FONTS_REQUIRED=1 native builds must embed the LXGW Chinese face from fonts/simplified-chinese-manifest.txt"
+        );
+        let face = craft_font_scripts().find(|(f, s, _)| *f == "LXGW WenKai Lite" && *s == "Regular");
+        assert_eq!(face.map(|(_, _, scripts)| scripts), Some(["Hani", "Hans"].as_slice()), "the Chinese manifest's script tags are asserted");
+    }
+
+    #[test]
+    fn barred_faces_never_enter_the_font_set() {
+        for (family, _, _) in craft_font_scripts() {
+            assert!(!family.contains("CJK"), "the barred Noto CJK collection must never be embedded: {family}");
+            assert!(!family.starts_with("Source ") && !family.starts_with("Adobe "), "a barred Adobe/Source face was embedded: {family}");
+        }
+    }
+
+    #[test]
+    fn the_required_craft_faces_keep_their_exact_scripts() {
+        if !craft_fonts_loaded() {
+            assert!(!craft_fonts_required(), "CRAFT_FONTS_REQUIRED=1 but no craft-fonts faces were embedded");
+            return;
+        }
+        let faces: Vec<_> = craft_font_scripts().collect();
+        for (family, style, scripts) in [
+            ("BIZ UDPGothic", "Regular", ["Jpan", "Latn"].as_slice()),
+            ("BIZ UDPGothic", "Bold", ["Jpan", "Latn"].as_slice()),
+            ("NanumGothic", "Regular", ["Hang", "Kore"].as_slice()),
+            ("Noto Sans Symbols", "Regular", ["Zsym"].as_slice()),
+            ("Noto Sans Symbols 2", "Regular", ["Zsym"].as_slice()),
+        ] {
+            assert!(
+                faces.iter().any(|(f, s, declared)| *f == family && *s == style && *declared == scripts),
+                "{family} {style} with {scripts:?} must be embedded; got {faces:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn available_text_maps_unbundled_chrome_symbols() {
+        // No bundled face has ⌃ ✓ ✕; chrome text must show ^ ✔ × instead of tofu. Document text is
+        // never rewritten: this helper is only used for interface tooltips.
+        let ctx = egui::Context::default();
+        ctx.set_fonts(FontDefinitions::default());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(available_text(ui, "Show Formulas (⌃`) ✓ ✕"), "Show Formulas (^`) ✔ ×");
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
@@ -990,7 +1212,7 @@ mod tests {
                 fallback_faces(HanOrder::of(language)).into_iter().filter_map(|(k, _)| fonts.font_data.get(k)).collect();
             for (i, a) in present.iter().enumerate() {
                 for b in present.iter().skip(i + 1) {
-                    assert!(a.font != b.font, "the same font file is loaded for two fallback scripts");
+                    assert!(!std::sync::Arc::ptr_eq(&a.font, &b.font), "the same font file is loaded for two fallback scripts");
                 }
             }
         }
@@ -998,16 +1220,21 @@ mod tests {
 
     #[test]
     fn fallback_covers_its_script() {
-        // Real render check, per script: the proportional family (what cells and the UI use) must
-        // resolve a sample string to a real glyph, not the tofu replacement char. Skips a script
-        // whose face is absent (a minimal machine) and fails if a face is present but not wired in.
-        let cases: [(&str, Vec<(String, u32)>, &str); 8] = [
+        // Real glyph check, per script: the proportional family (what cells and the UI use) must
+        // have a glyph for every non-space character in the sample. A script runs when a system
+        // face or the optional craft-fonts input provides one; the printed skip is a recorded
+        // gate, and a present face that is not wired in fails.
+        let cases: [(&str, Vec<(String, u32)>, &str); 10] = [
             ("sys-cjk-han-ja", cjk_han_japanese(), "カテゴリ"),
+            // Chinese uses a system Han face or the native-only permitted LXGW craft face; the
+            // barred Noto CJK collection never supplies it.
             ("sys-cjk-han-zh", cjk_han_simplified(), "页面布局 客户端配置"),
             ("sys-cjk-hangul", cjk_hangul(), "한글"),
             ("sys-thai", thai(), "ทดสอบ"),
             ("sys-lao", lao(), "ພາສາລາວ"),
             ("sys-hebrew", hebrew(), "עברית"),
+            ("craft-noto-sans-arabic", Vec::new(), "مرحبا"),
+            ("craft-noto-sans-georgian", Vec::new(), "ქართული"),
             ("ui", candidates(UI), "Русский"),
             // Czech interface labels: every Czech accented letter, in both cases.
             ("ui", candidates(UI), "Příliš žluťoučký kůň úpěl ďábelské ódy ŘŠČŽÝÁÍÉÚŮĚŤĎŇÓ"),
@@ -1017,26 +1244,19 @@ mod tests {
             ctx.set_fonts(font_definitions_for_language(language));
             let mut out = ctx.run_ui(egui::RawInput::default(), |_ui| {});
             out.textures_delta.clear(); // nothing consumes the atlas in a headless test
-            // `has_glyphs` is a false negative when the face that owns the script is also the face
-            // that draws the replacement glyph (DejaVu Sans as the UI font owns Hebrew), so compare
-            // the laid out glyphs with the tofu glyph itself instead.
             for family in [FontFamily::Proportional, FontFamily::Name(CELL.into())] {
-                let font = FontId::new(14.0, family);
-                let glyphs = |text: &str| {
-                    let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::BLACK));
-                    galley.rows.iter().flat_map(|r| r.glyphs.iter().filter(|g| g.chr != ' ').map(|g| g.uv_rect)).collect::<Vec<_>>()
-                };
-                let tofu = glyphs("\u{25FB}");
+                let font = FontId::new(14.0, family.clone());
                 for (key, cands, sample) in &cases {
-                    if !cands.iter().any(|(p, _)| std::path::Path::new(p).exists()) {
-                        continue; // no face for this script on this machine; nothing to assert
+                    // A script runs when a system face or the optional craft-fonts input provides
+                    // one. The skip is printed: a missing fixture is a recorded gate, not a pass.
+                    let system = cands.iter().any(|(p, _)| std::path::Path::new(p).exists());
+                    if !system && !craft_fonts_cover(sample) {
+                        eprintln!("skipped {key}: no system face and no craft-fonts face for {sample:?}");
+                        continue;
                     }
-                    let drawn = glyphs(sample);
-                    assert!(
-                        !drawn.is_empty() && drawn.iter().all(|g| !tofu.contains(g)),
-                        "{key} is present but {sample:?} still renders as tofu ({language:?}, {:?})",
-                        font.family
-                    );
+                    let missing: String =
+                        sample.chars().filter(|c| !c.is_whitespace()).filter(|&c| !ctx.fonts_mut(|f| f.has_glyph(&font, c))).collect();
+                    assert!(missing.is_empty(), "{key} is present but {sample:?} has no glyph for {missing:?} ({language:?}, {family:?})");
                 }
             }
         }
@@ -1062,7 +1282,7 @@ mod tests {
     fn unparseable_font_files_are_rejected_not_fatal() {
         // #226: epaint panics in `set_fonts` on a face it can't parse ("An offset was out of
         // bounds"). Garbage, a truncated real font and a bad collection index must all be refused.
-        let real = FontDefinitions::default().font_data.values().next().map(|fd| fd.font.to_vec()).unwrap_or_default();
+        let real = FontDefinitions::default().font_data.values().next().map(|fd| fd.bytes().to_vec()).unwrap_or_default();
         assert!(font_parses(&real, 0), "egui's own font must parse");
         assert!(!font_parses(b"", 0));
         assert!(!font_parses(&[0xAB; 64], 0));
@@ -1095,13 +1315,13 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let bad = dir.join("broken.ttf");
         let good = dir.join("good.ttf");
-        let real = FontDefinitions::default().font_data.values().next().map(|fd| fd.font.to_vec()).unwrap_or_default();
+        let real = FontDefinitions::default().font_data.values().next().map(|fd| fd.bytes().to_vec()).unwrap_or_default();
         let _ = std::fs::write(&bad, real.get(..40).unwrap_or_default());
         let _ = std::fs::write(&good, &real);
         let (bad_s, good_s) = (bad.to_string_lossy().into_owned(), good.to_string_lossy().into_owned());
         assert!(try_load(&[(bad_s.as_str(), 0)]).is_none());
         let loaded = try_load(&[(bad_s.as_str(), 0), (good_s.as_str(), 0)]);
-        assert_eq!(loaded.map(|fd| fd.font.len()), Some(real.len()));
+        assert_eq!(loaded.map(|fd| fd.bytes().len()), Some(real.len()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1116,11 +1336,11 @@ mod tests {
         let first = try_load(&[(p.as_str(), 0)]).unwrap();
         std::fs::remove_file(&path).unwrap();
         let second = try_load(&[(p.as_str(), 0)]).expect("kept from the first read");
-        let (std::borrow::Cow::Borrowed(a), std::borrow::Cow::Borrowed(b)) = (&first.font, &second.font) else {
-            panic!("interface font bytes must be borrowed, so egui shares them instead of copying");
-        };
-        assert!(std::ptr::eq(*a, *b));
-        assert_eq!(*a, epaint_default_fonts::UBUNTU_LIGHT);
+        assert!(
+            std::sync::Arc::ptr_eq(&first.font, &second.font),
+            "interface font bytes must be one shared blob, so egui shares them instead of copying"
+        );
+        assert_eq!(first.bytes(), epaint_default_fonts::UBUNTU_LIGHT);
         assert!(try_load(&[(p.as_str(), 3)]).is_none(), "a face the kept file doesn't have is still refused");
     }
 

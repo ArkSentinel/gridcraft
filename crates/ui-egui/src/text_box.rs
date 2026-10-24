@@ -18,7 +18,7 @@ pub struct EditState {
 }
 
 pub(crate) fn editor_id() -> egui::Id {
-    egui::Id::new("gridcraft.text_box_editor")
+    egui::Id::unique("gridcraft.text_box_editor")
 }
 
 impl SheetApp {
@@ -147,20 +147,22 @@ pub(crate) fn show(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &gridcr
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));
     child.set_clip_rect(rect);
     egui::ScrollArea::vertical().id_salt(id).max_height(rect.height()).auto_shrink([false, false]).show(&mut child, |ui| {
-        let response = ui.add(
-            TextEdit::multiline(&mut ed.text)
-                .id(id)
-                .font(FontId::new(14.0 * geo.z, egui::FontFamily::Name(theme::CELL.into())))
-                .text_color(Color32::BLACK)
-                .frame(egui::Frame::NONE)
-                .margin(egui::Margin::ZERO)
-                .desired_width(rect.width())
-                .desired_rows(1)
-                // shape.setText's limit (a cell's).
-                .char_limit(32_767)
-                .min_size(rect.size())
-                .lock_focus(true),
-        );
+        let response = ui
+            .add(
+                TextEdit::multiline(&mut ed.text)
+                    .id(id)
+                    .font(FontId::new(14.0 * geo.z, egui::FontFamily::Name(theme::CELL.into())))
+                    .text_color(Color32::BLACK)
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::Margin::ZERO)
+                    .desired_width(rect.width())
+                    .desired_rows(1)
+                    // shape.setText's limit (a cell's).
+                    .char_limit(32_767)
+                    .min_size(rect.size())
+                    .lock_focus(true),
+            )
+            .accessible_name(app.ui.language.tr("Text Box"));
         if ed.request_focus {
             response.request_focus();
             ed.request_focus = false;

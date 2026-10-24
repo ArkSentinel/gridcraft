@@ -207,6 +207,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Предварительный просмотр\nразрывов страниц",
         "Page\nLayout" => "Разметка\nстраницы",
         "Formula Bar" => "Строка формул",
+        "Name Box" => "Поле имени",
+        "Cell Editor" => "Редактор ячейки",
+        "Font Size" => "Размер шрифта",
         "Gridlines" => "Сетка",
         "Headings" => "Заголовки",
         "Zoom" => "Масштаб",
@@ -306,6 +309,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Dark" => "Тёмная",
         "Sheet Options|View" => "На экране",
         "Print" => "Печать",
+        "Print What" => "Что печатать",
         // Page Layout view and the Header & Footer tab.
         "Click to add data" => "Щелкните, чтобы добавить данные",
         "Add header" => "Добавить верхний колонтитул",
@@ -435,6 +439,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "Следующий лист",
         "All sheets" => "Все листы",
         "New sheet (⇧F11)" => "Новый лист (⇧F11)",
+        "Text Box" => "Надпись",
         _ => return None,
     })
 }

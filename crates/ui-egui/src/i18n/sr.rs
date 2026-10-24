@@ -202,6 +202,9 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Page Break\nPreview" => "Pregled preloma\nstranica",
         "Page\nLayout" => "Izgled\nstranice",
         "Formula Bar" => "Traka formule",
+        "Name Box" => "Polje imena",
+        "Cell Editor" => "Uređivač ćelije",
+        "Font Size" => "Veličina fonta",
         "Gridlines" => "Linije mreže",
         "Headings" => "Zaglavlja",
         "Zoom" => "Uvećanje",
@@ -300,6 +303,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "More\nFunctions" => "Još\nfunkcija",
         "Sheet Options|View" => "Prikaz",
         "Print" => "Štampaj",
+        "Print What" => "Šta štampati",
         "Click to add data" => "Kliknite da dodate podatke",
         "Add header" => "Dodaj zaglavlje",
         "Add footer" => "Dodaj podnožje",
@@ -433,6 +437,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Next sheet" => "Следећи лист",
         "All sheets" => "Сви листови",
         "New sheet (⇧F11)" => "Нови лист (⇧F11)",
+        "Text Box" => "Текстуално поље",
         _ => return None,
     })
 }
