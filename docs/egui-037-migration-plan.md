@@ -1,25 +1,23 @@
 # GridCraft — egui 0.37 migration plan
 
-Status: local implementation based on GridCraft `b8771d51fb4da60bd48c13cf313d6d6014dc5e66`.
-Canonical pins are egui `173cc7375d35dc5fbc5b5d0994fdf787f547c5d1`, winit
-`ae48c756a3b81125eb796c0cc6dccf60990d1181`, craft-ui/craft-print
-`c488caa9fbc2fb1a86e4674887e9b80b598ebbfa` and craft-fonts
-`b076417b5880bd4154bd22f00695b1d28c6bea83`. Canonical lock SHA256 is
-`98209e84412b8ce08bf290ab706c20909389ca6d1e6668aca929f717ad55ea2f`.
-Final managed full CI `egui037-gridcraft-candidate-20261024-full-ci-queue-07` succeeded on
-2026-10-24 at 05:21 UTC after the explicit-accessibility and accessible-name repairs. All ten stages
-passed: i18n-report, fmt, strict workspace all-target clippy, workspace tests, doctest, assets,
-layers, WASM, parity and keytips. Actual totals are 2,249 passed / 0 failed / 1 existing timing
-ignore, including 202 UI unit, 769 UI integration, 25 keytip integration and 2 font tests. The
-representative explicit accessibility/capture checks passed. This completes the required local
-precommit CI gate for that formatted runtime source; the final documentation refresh changes only
-the two local migration documents. Native/platform/performance and application E21b qualification
-remain open; canonical pins and full CI do not imply the complete P8 contract is qualified.
-Every push/tag/new PR requires fresh explicit human approval after contents and validation review;
-none is granted. Earlier compiler logs, source anchors, baseline inventories and proposed implementation steps
-below are historical design records; this status and the final qualification update govern current
-pins and acceptance. Final source/review/CI bindings are retained under
-`egui037-migration-20261022/final-landing/gridcraft-final-qualification` in local task evidence.
+Status (2026-10-24): the local migration incorporates frozen main
+`3099df934eda27cd457a9b8d1525d3fc973a1b7b`. Canonical pins are egui
+`6d518fc799681571963842f95b55a6b68431b15a`, winit
+`a517b3846ee8457d84ee4975110bfda6797c44dc`, craft-ui/craft-print
+`25da1314d443171b4adeaad2cd9454b273f35c6f` and craft-fonts
+`b076417b5880bd4154bd22f00695b1d28c6bea83`. The regenerated lock SHA256 is
+`426a766291a8246573bf57e3ab3f5f17ff812487582254a32ff5a2ec0db39f27` and passed the dependency-source audit.
+`egui037-gridcraft-final-ci-20261024-2038` passed all ten stages: i18n-report,
+fmt, strict workspace all-target clippy, workspace tests, doctest, assets, layers,
+WASM, parity and keytips. Actual totals are 2,351 passed, none failed and one ignored.
+The local merge preserves both migration history and the reviewed upstream changes;
+final code and dependency bytes match the passing CI. Subsequent status edits are prose only.
+Native/platform/performance and application E21b qualification remain open; canonical
+pins and full CI do not imply that every native contract is qualified.
+Human review and explicit publication approval are required. Earlier compiler logs,
+source anchors, baseline inventories and proposed steps below are historical records;
+this status governs current pins and acceptance. Final commit/source/CI bindings are in
+`final-landing/local-review-commits-2213/gridcraft` in the migration task evidence.
 
 Scope: `storytold/gridcraft` only. The shared `storytold/craft-libs`, egui fork and winit fork are
 dependencies of this plan, not files this plan changes. Application document models, commands, undo
@@ -35,11 +33,11 @@ semantics, XLSX persistence and UI policy remain owned by GridCraft.
 | GridCraft baseline SHA | `b8771d51fb4da60bd48c13cf313d6d6014dc5e66` (current `main` merge base for this migration; the earlier `ac8da7d4` release baseline is retained as historical evidence below) |
 | Workspace version / edition / MSRV | `0.11.1`, edition 2024, declared `rust-version = "1.95"` |
 | Lockfile | `Cargo.lock`, format version 4 |
-| Current egui family | selected packages at 0.37.0 from canonical173cc737; `egui_extras` declared at 0.37 but unused |
-| Current winit / wgpu | winit 0.30.13 at canonical ae48c756; wgpu 30.0.1 |
+| Current egui family | selected packages at 0.37.0 from canonical6d518fc7; `egui_extras` declared at 0.37 but unused |
+| Current winit / wgpu | winit 0.30.13 at canonical a517b384; wgpu 30.0.1 |
 | Current accesskit / kittest | accesskit 0.25.1, accesskit_consumer 0.39.1, kittest 0.5.0, accesskit_winit 0.34.1 |
 | Current skrifa | 0.44.0, shared by `epaint` and `gridcraft-ui-egui` |
-| Shared UI dependency | craft-ui and craft-print both pin canonical c488caa9; the complete 0.37 UI/capture tree is included |
+| Shared UI dependency | craft-ui and craft-print both pin canonical 25da1314; the complete 0.37 UI/capture tree is included |
 | Shared capture helper | `craft-ui` CL-2 provisional capture slot; GridCraft/DesignCraft adapters are the pilot and precede CL-2F. CL-1 and CL-2F are the shared gate for the eleven craft-ui consumers |
 | Target upstream release | egui annotated tag `0.37.0`, peeled commit `841a328ba2dd8f6996beb7189ebb7fc00e668a2a` (2026-10-15) |
 | Historical review candidate egui (superseded by current immutable pin) | `aiongg/egui` `craft/0.37` at `a4f9a17f64a6bae61350fb85804c9df0d9865916`; inspect only, never publish this branch |
@@ -1300,7 +1298,7 @@ Canonical `storytold/gridcraft` `main` for this migration is `b8771d51fb4da60bd4
 `/home/codex/work/CraftApps/egui037-migration-20261022/gridcraft-implementation`). The earlier
 `bdf8b8cc…` and `ac8da7d4…` SHAs and line anchors above are retained as historical review
 evidence; use `b8771d51fb4da60bd48c13cf313d6d6014dc5e66` and its exact lockfile for current-main integration and paired
-measurements. Shared `craft-libs` integration now pins canonical c488caa9; 3832c47 is its
+measurements. Shared `craft-libs` integration now pins canonical 25da1314; 3832c47 is its
 historical integration base. The original refs remain reachable. These unpublished immutable
 pins still require an approved publication and clean remote-fetch verification.
 
