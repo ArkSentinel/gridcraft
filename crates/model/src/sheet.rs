@@ -618,7 +618,7 @@ mod tests {
 mod picture_map {
     use crate::cell::CellPicture;
     use gridcraft_core::CellRef;
-    use serde::{Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
     use std::sync::Arc;
     pub fn serialize<S: Serializer>(map: &BTreeMap<CellRef, Arc<CellPicture>>, serializer: S) -> Result<S::Ok, S::Error> {
