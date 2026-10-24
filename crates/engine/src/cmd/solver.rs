@@ -28,11 +28,10 @@ use gridcraft_core::{CellRef, RangeRef, Value};
 use gridcraft_model::{Cell, DefinedName, Sheet, Workbook};
 use serde_json::{Value as Json, json};
 
+use super::check_arrays;
 use super::whatif::Trial;
-use super::{
-    CommandSpec, Ctx, DocState, EngineError, Result, Session, bad, bool_param, cmd, edit, f64_param, has_doc, sheet_index, sheet_mut, str_param,
-    touch,
-};
+use super::{CommandSpec, Ctx, DocState, EngineError, Result, Session, bad, bool_param, cmd, edit, f64_param, has_doc, str_param};
+use gridcraft_core::split_sheet;
 
 const CMD: &str = "data.solver";
 const REPORT_CMD: &str = "data.solverReport";
