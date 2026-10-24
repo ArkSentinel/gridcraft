@@ -4,7 +4,10 @@
 use std::collections::HashMap;
 
 use gridcraft_core::{CellRef, RangeRef, Value, compare};
-use gridcraft_model::*;
+use gridcraft_model::{
+    Cell, CfOperator, CfRule, CfValueKind, Color, CondFormat, Fill, Formula, PatternType, Sheet, Style, Underline, Workbook, default_icon_thresholds,
+    icon_count,
+};
 
 /// The conditional look of one cell.
 #[derive(Clone, Debug, Default, PartialEq)]
