@@ -645,19 +645,25 @@ fn cjk_hangul() -> Vec<(String, u32)> {
 }
 
 /// Thai faces. Windows ships Leelawadee UI and Tahoma/Microsoft Sans Serif (both carry Thai);
+/// Linux font directories searched by the Thai and Hebrew faces, in priority order.
+#[cfg(not(target_arch = "wasm32"))]
+fn linux_noto_dirs() -> [&'static str; 5] {
+    [
+        "/usr/share/fonts/truetype/noto",
+        "/usr/share/fonts/opentype/noto",
+        "/usr/share/fonts/truetype",
+        "/usr/share/fonts",
+        "/usr/share/fonts/chromeos/noto", // ChromeOS's Linux container (#1762)
+    ]
+}
+
 /// macOS has Thonburi; Linux usually has Noto Sans Thai or Garuda.
 #[cfg(not(target_arch = "wasm32"))]
 fn thai() -> Vec<(String, u32)> {
     let mac_sys = "/System/Library/Fonts";
     let mac_sup = "/System/Library/Fonts/Supplemental";
     let win = windows_fonts();
-    let lin = [
-        "/usr/share/fonts/truetype/noto",
-        "/usr/share/fonts/opentype/noto",
-        "/usr/share/fonts/truetype",
-        "/usr/share/fonts",
-        "/usr/share/fonts/chromeos/noto", // ChromeOS's Linux container (#1762)
-    ];
+    let lin = linux_noto_dirs();
     let mut v: Vec<(String, u32)> = vec![
         (format!("{win}\\LeelawUI.ttf"), 0), // Leelawadee UI
         (format!("{win}\\tahoma.ttf"), 0),   // Tahoma
@@ -703,13 +709,7 @@ fn hebrew() -> Vec<(String, u32)> {
     let mac_sys = "/System/Library/Fonts";
     let mac_sup = "/System/Library/Fonts/Supplemental";
     let win = windows_fonts();
-    let lin = [
-        "/usr/share/fonts/truetype/noto",
-        "/usr/share/fonts/opentype/noto",
-        "/usr/share/fonts/truetype",
-        "/usr/share/fonts",
-        "/usr/share/fonts/chromeos/noto", // ChromeOS's Linux container (#1762)
-    ];
+    let lin = linux_noto_dirs();
     let mut v: Vec<(String, u32)> = vec![
         (format!("{win}\\david.ttf"), 0),      // David
         (format!("{win}\\frank.ttf"), 0),      // FrankRuehl
