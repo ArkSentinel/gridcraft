@@ -580,6 +580,18 @@ fn windows_fonts() -> String {
     std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into())
 }
 
+/// The Noto Sans CJK faces for one locale (`jp`, `sc`, `kr`): the per-locale OTF, then the
+/// region-merged TTC at `face`, in every Linux font directory.
+#[cfg(not(target_arch = "wasm32"))]
+fn noto_cjk(locale: &str, face: u32) -> Vec<(String, u32)> {
+    let mut v = Vec::new();
+    for d in LINUX_CJK_DIRS {
+        v.push((format!("{d}/NotoSansCJK{locale}-Regular.otf"), 0));
+        v.push((format!("{d}/NotoSansCJK-Regular.ttc"), face));
+    }
+    v
+}
+
 /// Japanese Han + Kana faces (Japanese kanji glyph shapes).
 ///
 /// The region-merged `NotoSansCJK-Regular.ttc` holds one face per locale (JP 0, KR 1, SC 2, TC 3,
@@ -593,10 +605,7 @@ fn cjk_han_japanese() -> Vec<(String, u32)> {
     v.push((format!("{win}\\YuGothR.ttc"), 0)); // Yu Gothic
     v.push((format!("{win}\\msgothic.ttc"), 0)); // MS Gothic
     v.push((format!("{mac}/ヒラギノ角ゴシック W3.ttc"), 0)); // Hiragino Sans
-    for d in LINUX_CJK_DIRS {
-        v.push((format!("{d}/NotoSansCJKjp-Regular.otf"), 0));
-        v.push((format!("{d}/NotoSansCJK-Regular.ttc"), 0)); // JP face
-    }
+    v.extend(noto_cjk("jp", 0));
     v
 }
 
@@ -613,10 +622,7 @@ fn cjk_han_simplified() -> Vec<(String, u32)> {
         (format!("{mac}/Hiragino Sans GB.ttc"), 0), // ships on every recent macOS
         (format!("{mac}/PingFang.ttc"), 0),         // older macOS only; now a downloadable asset
     ];
-    for d in LINUX_CJK_DIRS {
-        v.push((format!("{d}/NotoSansCJKsc-Regular.otf"), 0));
-        v.push((format!("{d}/NotoSansCJK-Regular.ttc"), 2)); // SC face
-    }
+    v.extend(noto_cjk("sc", 2));
     for d in LINUX_CJK_DIRS {
         v.push((format!("{d}/wqy/wqy-microhei.ttc"), 0));
         v.push((format!("{d}/wenquanyi/wqy-microhei.ttc"), 0));
@@ -634,10 +640,7 @@ fn cjk_hangul() -> Vec<(String, u32)> {
     let mut v: Vec<(String, u32)> = Vec::new();
     v.push((format!("{win}\\malgun.ttf"), 0)); // Malgun Gothic
     v.push((format!("{mac}/AppleSDGothicNeo.ttc"), 0));
-    for d in LINUX_CJK_DIRS {
-        v.push((format!("{d}/NotoSansCJKkr-Regular.otf"), 0));
-        v.push((format!("{d}/NotoSansCJK-Regular.ttc"), 1)); // KR face
-    }
+    v.extend(noto_cjk("kr", 1));
     v
 }
 
