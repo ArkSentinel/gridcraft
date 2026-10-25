@@ -9,6 +9,11 @@ use std::sync::Arc;
 
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Visuals};
 
+/// The light or dark value of a colour, by mode.
+fn pick(dark: bool, light: Color32, dark_value: Color32) -> Color32 {
+    if dark { dark_value } else { light }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     pub dark: bool,
@@ -58,92 +63,56 @@ pub struct Tokens {
 
 impl Tokens {
     pub fn light() -> Tokens {
-        Tokens {
-            dark: false,
-            window: Color32::from_rgb(0xF3, 0xF3, 0xF3),
-            ribbon: Color32::from_rgb(0xFF, 0xFF, 0xFF),
-            ribbon_border: Color32::from_rgb(0xE3, 0xE3, 0xE3),
-            text: Color32::from_rgb(0x24, 0x24, 0x24),
-            text_dim: Color32::from_rgb(0x61, 0x61, 0x61),
-            text_disabled: Color32::from_rgb(0xB0, 0xB0, 0xB0),
-            accent: Color32::from_rgb(0x10, 0x7C, 0x41),
-            accent_dark: Color32::from_rgb(0x0B, 0x5E, 0x31),
-            accent_soft: Color32::from_rgb(0xDF, 0xF1, 0xE6),
-            hover: Color32::from_rgb(0xEB, 0xEB, 0xEB),
-            pressed: Color32::from_rgb(0xDD, 0xDD, 0xDD),
-            separator: Color32::from_rgb(0xE0, 0xE0, 0xE0),
-            grid_bg: Color32::WHITE,
-            desk: Color32::from_rgb(0xDE, 0xDE, 0xDE),
-            gridline: Color32::from_rgb(0xE1, 0xE1, 0xE1),
-            header_bg: Color32::from_rgb(0xF8, 0xF8, 0xF8),
-            header_text: Color32::from_rgb(0x42, 0x42, 0x42),
-            header_line: Color32::from_rgb(0xD6, 0xD6, 0xD6),
-            header_sel_bg: Color32::from_rgb(0xE1, 0xE1, 0xE1),
-            header_sel_text: Color32::from_rgb(0x10, 0x7C, 0x41),
-            header_all_bg: Color32::from_rgb(0xC8, 0xE6, 0xD3),
-            sel_fill: Color32::from_rgba_unmultiplied(0x10, 0x7C, 0x41, 0x1C),
-            sel_border: Color32::from_rgb(0x10, 0x7C, 0x41),
-            input_bg: Color32::WHITE,
-            input_border: Color32::from_rgb(0xD1, 0xD1, 0xD1),
-            tab_bar: Color32::from_rgb(0xF3, 0xF3, 0xF3),
-            tab_active: Color32::WHITE,
-            status_bar: Color32::from_rgb(0xF3, 0xF3, 0xF3),
-            cell_text: Color32::BLACK,
-            menu_bg: Color32::WHITE,
-            shadow: Color32::from_black_alpha(40),
-            danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
-            error_check_green: Color32::from_rgb(0x1E, 0x8E, 0x3E),
-            warning_fill: Color32::from_rgb(0xF2, 0xB7, 0x05),
-            warning_ink: Color32::BLACK,
-            notice_warn_bg: Color32::from_rgb(0xFF, 0xF4, 0xCE),
-            notice_warn_border: Color32::from_rgb(0xF0, 0xC3, 0x6E),
-            notice_info_bg: Color32::from_rgb(0xEA, 0xF2, 0xFB),
-            notice_info_border: Color32::from_rgb(0xB9, 0xD2, 0xEC),
-        }
+        Tokens::palette(false)
     }
 
     pub fn dark() -> Tokens {
+        Tokens::palette(true)
+    }
+
+    /// One palette for both modes: each colour is written once, with its light and dark values.
+    fn palette(dark: bool) -> Tokens {
         Tokens {
-            dark: true,
-            window: Color32::from_rgb(0x29, 0x29, 0x29),
-            ribbon: Color32::from_rgb(0x33, 0x33, 0x33),
-            ribbon_border: Color32::from_rgb(0x40, 0x40, 0x40),
-            text: Color32::from_rgb(0xEE, 0xEE, 0xEE),
-            text_dim: Color32::from_rgb(0xB0, 0xB0, 0xB0),
-            text_disabled: Color32::from_rgb(0x70, 0x70, 0x70),
-            accent: Color32::from_rgb(0x5C, 0xC5, 0x87),
-            accent_dark: Color32::from_rgb(0x3F, 0xA8, 0x6C),
-            accent_soft: Color32::from_rgb(0x23, 0x45, 0x31),
-            hover: Color32::from_rgb(0x42, 0x42, 0x42),
-            pressed: Color32::from_rgb(0x4D, 0x4D, 0x4D),
-            separator: Color32::from_rgb(0x48, 0x48, 0x48),
-            grid_bg: Color32::WHITE,
-            desk: Color32::from_rgb(0x3A, 0x3A, 0x3A),
-            gridline: Color32::from_rgb(0xE1, 0xE1, 0xE1),
-            header_bg: Color32::from_rgb(0x30, 0x30, 0x30),
-            header_text: Color32::from_rgb(0xCC, 0xCC, 0xCC),
-            header_line: Color32::from_rgb(0x45, 0x45, 0x45),
-            header_sel_bg: Color32::from_rgb(0x45, 0x45, 0x45),
-            header_sel_text: Color32::from_rgb(0x5C, 0xC5, 0x87),
-            header_all_bg: Color32::from_rgb(0x2E, 0x55, 0x3E),
-            sel_fill: Color32::from_rgba_unmultiplied(0x10, 0x7C, 0x41, 0x24),
-            sel_border: Color32::from_rgb(0x10, 0x7C, 0x41),
-            input_bg: Color32::from_rgb(0x1F, 0x1F, 0x1F),
-            input_border: Color32::from_rgb(0x50, 0x50, 0x50),
-            tab_bar: Color32::from_rgb(0x29, 0x29, 0x29),
-            tab_active: Color32::from_rgb(0x3A, 0x3A, 0x3A),
-            status_bar: Color32::from_rgb(0x29, 0x29, 0x29),
-            cell_text: Color32::BLACK,
-            menu_bg: Color32::from_rgb(0x30, 0x30, 0x30),
-            shadow: Color32::from_black_alpha(90),
-            danger: Color32::from_rgb(0xF1, 0x70, 0x5F),
-            error_check_green: Color32::from_rgb(0x4C, 0xC2, 0x6B),
-            warning_fill: Color32::from_rgb(0xF2, 0xB7, 0x05),
-            warning_ink: Color32::BLACK,
-            notice_warn_bg: Color32::from_rgb(0x4A, 0x3F, 0x1E),
-            notice_warn_border: Color32::from_rgb(0x7A, 0x67, 0x30),
-            notice_info_bg: Color32::from_rgb(0x24, 0x33, 0x44),
-            notice_info_border: Color32::from_rgb(0x3B, 0x55, 0x72),
+            dark,
+            window: pick(dark, Color32::from_rgb(0xF3, 0xF3, 0xF3), Color32::from_rgb(0x29, 0x29, 0x29)),
+            ribbon: pick(dark, Color32::from_rgb(0xFF, 0xFF, 0xFF), Color32::from_rgb(0x33, 0x33, 0x33)),
+            ribbon_border: pick(dark, Color32::from_rgb(0xE3, 0xE3, 0xE3), Color32::from_rgb(0x40, 0x40, 0x40)),
+            text: pick(dark, Color32::from_rgb(0x24, 0x24, 0x24), Color32::from_rgb(0xEE, 0xEE, 0xEE)),
+            text_dim: pick(dark, Color32::from_rgb(0x61, 0x61, 0x61), Color32::from_rgb(0xB0, 0xB0, 0xB0)),
+            text_disabled: pick(dark, Color32::from_rgb(0xB0, 0xB0, 0xB0), Color32::from_rgb(0x70, 0x70, 0x70)),
+            accent: pick(dark, Color32::from_rgb(0x10, 0x7C, 0x41), Color32::from_rgb(0x5C, 0xC5, 0x87)),
+            accent_dark: pick(dark, Color32::from_rgb(0x0B, 0x5E, 0x31), Color32::from_rgb(0x3F, 0xA8, 0x6C)),
+            accent_soft: pick(dark, Color32::from_rgb(0xDF, 0xF1, 0xE6), Color32::from_rgb(0x23, 0x45, 0x31)),
+            hover: pick(dark, Color32::from_rgb(0xEB, 0xEB, 0xEB), Color32::from_rgb(0x42, 0x42, 0x42)),
+            pressed: pick(dark, Color32::from_rgb(0xDD, 0xDD, 0xDD), Color32::from_rgb(0x4D, 0x4D, 0x4D)),
+            separator: pick(dark, Color32::from_rgb(0xE0, 0xE0, 0xE0), Color32::from_rgb(0x48, 0x48, 0x48)),
+            grid_bg: pick(dark, Color32::WHITE, Color32::WHITE),
+            desk: pick(dark, Color32::from_rgb(0xDE, 0xDE, 0xDE), Color32::from_rgb(0x3A, 0x3A, 0x3A)),
+            gridline: pick(dark, Color32::from_rgb(0xE1, 0xE1, 0xE1), Color32::from_rgb(0xE1, 0xE1, 0xE1)),
+            header_bg: pick(dark, Color32::from_rgb(0xF8, 0xF8, 0xF8), Color32::from_rgb(0x30, 0x30, 0x30)),
+            header_text: pick(dark, Color32::from_rgb(0x42, 0x42, 0x42), Color32::from_rgb(0xCC, 0xCC, 0xCC)),
+            header_line: pick(dark, Color32::from_rgb(0xD6, 0xD6, 0xD6), Color32::from_rgb(0x45, 0x45, 0x45)),
+            header_sel_bg: pick(dark, Color32::from_rgb(0xE1, 0xE1, 0xE1), Color32::from_rgb(0x45, 0x45, 0x45)),
+            header_sel_text: pick(dark, Color32::from_rgb(0x10, 0x7C, 0x41), Color32::from_rgb(0x5C, 0xC5, 0x87)),
+            header_all_bg: pick(dark, Color32::from_rgb(0xC8, 0xE6, 0xD3), Color32::from_rgb(0x2E, 0x55, 0x3E)),
+            sel_fill: pick(dark, Color32::from_rgba_unmultiplied(0x10, 0x7C, 0x41, 0x1C), Color32::from_rgba_unmultiplied(0x10, 0x7C, 0x41, 0x24)),
+            sel_border: pick(dark, Color32::from_rgb(0x10, 0x7C, 0x41), Color32::from_rgb(0x10, 0x7C, 0x41)),
+            input_bg: pick(dark, Color32::WHITE, Color32::from_rgb(0x1F, 0x1F, 0x1F)),
+            input_border: pick(dark, Color32::from_rgb(0xD1, 0xD1, 0xD1), Color32::from_rgb(0x50, 0x50, 0x50)),
+            tab_bar: pick(dark, Color32::from_rgb(0xF3, 0xF3, 0xF3), Color32::from_rgb(0x29, 0x29, 0x29)),
+            tab_active: pick(dark, Color32::WHITE, Color32::from_rgb(0x3A, 0x3A, 0x3A)),
+            status_bar: pick(dark, Color32::from_rgb(0xF3, 0xF3, 0xF3), Color32::from_rgb(0x29, 0x29, 0x29)),
+            cell_text: pick(dark, Color32::BLACK, Color32::BLACK),
+            menu_bg: pick(dark, Color32::WHITE, Color32::from_rgb(0x30, 0x30, 0x30)),
+            shadow: pick(dark, Color32::from_black_alpha(40), Color32::from_black_alpha(90)),
+            danger: pick(dark, Color32::from_rgb(0xC4, 0x2B, 0x1C), Color32::from_rgb(0xF1, 0x70, 0x5F)),
+            error_check_green: pick(dark, Color32::from_rgb(0x1E, 0x8E, 0x3E), Color32::from_rgb(0x4C, 0xC2, 0x6B)),
+            warning_fill: pick(dark, Color32::from_rgb(0xF2, 0xB7, 0x05), Color32::from_rgb(0xF2, 0xB7, 0x05)),
+            warning_ink: pick(dark, Color32::BLACK, Color32::BLACK),
+            notice_warn_bg: pick(dark, Color32::from_rgb(0xFF, 0xF4, 0xCE), Color32::from_rgb(0x4A, 0x3F, 0x1E)),
+            notice_warn_border: pick(dark, Color32::from_rgb(0xF0, 0xC3, 0x6E), Color32::from_rgb(0x7A, 0x67, 0x30)),
+            notice_info_bg: pick(dark, Color32::from_rgb(0xEA, 0xF2, 0xFB), Color32::from_rgb(0x24, 0x33, 0x44)),
+            notice_info_border: pick(dark, Color32::from_rgb(0xB9, 0xD2, 0xEC), Color32::from_rgb(0x3B, 0x55, 0x72)),
         }
     }
 
