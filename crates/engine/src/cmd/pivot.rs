@@ -684,7 +684,24 @@ fn field_list(v: Option<&Json>) -> Vec<Json> {
 }
 
 fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
-    if s.doc()?.wb.protected_structure && matches!(str_param(p, "destination"), None | Some("new")) {
+    // Where the report goes: `destination` may be the word "new"/"existing" or a place. An
+    // "existing" destination takes its place from `location`; a place alone is an existing sheet.
+    let dest_raw = str_param(p, "destination").or_else(|| str_param(p, "location")).unwrap_or("new").trim().to_string();
+    let dest = if dest_raw.eq_ignore_ascii_case("existing") {
+        // "existing" is a mode, not a place: the sheet comes from `location`, and an empty one
+        // must not silently fall back to the new-sheet path.
+        let loc = str_param(p, "location").unwrap_or("").trim().to_string();
+        if loc.is_empty() {
+            return Err(bad("insert.pivotTable", "`location` is required for an existing worksheet"));
+        }
+        loc
+    } else {
+        dest_raw
+    };
+    // Adding a sheet changes the workbook's structure, so it is refused when that is protected.
+    // The condition matches the new-sheet path below exactly (`"New"`, `"NEW"` and `""` are all new).
+    let new_sheet = dest.eq_ignore_ascii_case("new") || dest.is_empty();
+    if new_sheet && s.doc()?.wb.protected_structure {
         return Err(other("The workbook is protected and cannot be changed."));
     }
     let source = source_param(s, p)?;
@@ -701,21 +718,8 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
         }
         _ => next_pivot_name(&s.doc()?.wb),
     };
-    let dest_raw = str_param(p, "destination").or_else(|| str_param(p, "location")).unwrap_or("new").trim().to_string();
-    let dest = if dest_raw.eq_ignore_ascii_case("existing") {
-        // "existing" is a mode, not a place: the sheet comes from `location`, and an empty one
-        // must not silently fall back to the new-sheet path (which also bypasses the
-        // structure-protection check above).
-        let loc = str_param(p, "location").unwrap_or("").trim().to_string();
-        if loc.is_empty() {
-            return Err(bad("insert.pivotTable", "`location` is required for an existing worksheet"));
-        }
-        loc
-    } else {
-        dest_raw
-    };
     // Existing sheet destination: (sheet index, anchor).
-    let target: Option<(usize, CellRef)> = if dest.eq_ignore_ascii_case("new") || dest.is_empty() {
+    let target: Option<(usize, CellRef)> = if new_sheet {
         None
     } else {
         let d = s.doc()?;
@@ -1411,24 +1415,16 @@ fn timeline(s: &mut Session, p: &Json) -> Result<Json> {
     update(s, p, |pt, src, wb| {
         let field = canonical(C, src, &field)?;
         let labels = pv::timeline_labels(wb, pt, src, &field, start.as_deref(), end.as_deref());
+        // An empty result is a real selection of nothing (no date in the range), not "no filter":
+        // `None` would leave every record visible.
         let i = pt.filters.iter().position(|f| f.source_col.eq_ignore_ascii_case(&field));
-        if labels.is_empty() {
-            if let Some(idx) = i {
-                if !in_axes(pt, &field) {
-                    pt.filters.remove(idx);
-                } else if let Some(f) = pt.filters.get_mut(idx) {
-                    f.selected = None;
+        match i {
+            Some(idx) => {
+                if let Some(f) = pt.filters.get_mut(idx) {
+                    f.selected = Some(labels);
                 }
             }
-        } else {
-            match i {
-                Some(idx) => {
-                    if let Some(f) = pt.filters.get_mut(idx) {
-                        f.selected = Some(labels);
-                    }
-                }
-                None => pt.filters.push(PivotFilter { source_col: field.clone(), selected: Some(labels), value_filter: None }),
-            }
+            None => pt.filters.push(PivotFilter { source_col: field.clone(), selected: Some(labels), value_filter: None }),
         }
         Ok(json!({"field": field}))
     })
@@ -2065,6 +2061,12 @@ mod tests {
         let r = p.last_range.unwrap();
         (r.start.row..=r.end.row).find(|row| val(s, &CellRef::new(*row, r.start.col).a1()).display() == label)
     }
+    /// The report's first-column labels, top to bottom.
+    fn labels(s: &Session) -> Vec<String> {
+        let p = pt(s);
+        let r = p.last_range.unwrap();
+        (r.start.row..=r.end.row).map(|row| val(s, &CellRef::new(row, r.start.col).a1()).display()).collect()
+    }
 
     #[test]
     fn insert_creates_placeholder_on_new_sheet() {
@@ -2220,6 +2222,74 @@ mod tests {
         );
         s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "existing", "location": "Sheet1!F3"})).unwrap();
         assert_eq!(pt(&s).anchor, CellRef::parse("F3").unwrap());
+        // A location with no `destination` is an existing sheet, not a new one.
+        s.execute("insert.pivotTable", json!({"source": "Sheet1!A1:E13", "rows": ["Region"], "values": ["Sales"], "location": "Sheet1!F20"}))
+            .unwrap();
+        assert_eq!(s.doc().unwrap().wb.sheets.len(), 1, "no sheet was added");
+    }
+
+    #[test]
+    fn structure_protection_covers_every_new_sheet_destination() {
+        // The check matched only the exact string "new", so "New", "NEW" and "" all added a sheet
+        // to a workbook whose structure is protected.
+        for dest in [json!("new"), json!("New"), json!("NEW"), json!("")] {
+            let mut s = sales();
+            s.execute("review.protectWorkbook", json!({})).unwrap();
+            let e = s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": dest})).unwrap_err();
+            assert!(e.to_string().contains("protected"), "{dest}: {e}");
+            assert_eq!(s.doc().unwrap().wb.sheets.len(), 1, "{dest}: no sheet was added");
+        }
+    }
+
+    #[test]
+    fn a_timeline_outside_every_date_shows_no_items() {
+        // An empty selection is a selection of nothing; it used to clear the filter instead, which
+        // made the whole report visible again.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"source": "Sheet1!A1:E13", "rows": ["Date"], "values": ["Sales"], "destination": "Sheet1!G3"}))
+            .unwrap();
+        s.execute("pivot.timeline", json!({"field": "Date", "start": "2030-01-01", "end": "2030-12-31"})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        let f = sh.pivots[0].filters.iter().find(|f| f.source_col == "Date").expect("the timeline leaves a filter");
+        assert_eq!(f.selected.as_deref(), Some(&[][..]), "an explicit empty selection, not None");
+        // Nothing of the report's body survives but the headers and the grand total row.
+        let r = sh.pivots[0].last_range.unwrap();
+        let labels: Vec<String> = (r.start.row + 1..=r.end.row).map(|x| sh.value(CellRef::new(x, r.start.col)).display()).collect();
+        assert_eq!(labels, vec!["Grand Total".to_string()], "no date is in the range, got {labels:?}");
+    }
+
+    #[test]
+    fn a_bounded_timeline_excludes_values_that_are_not_dates() {
+        // A date field can hold text ("TBD"). A range with both ends is a range: a value that can't
+        // be placed in it is out, not silently kept.
+        let mut s = Session::new();
+        s.new_workbook();
+        let rows = json!([["Date", "Sales"], ["1/15/2026", 10], ["6/15/2026", 20], ["TBD", 30],]);
+        s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+        s.execute("selection.set", json!({"range": "A1"})).unwrap();
+        s.execute("insert.pivotTable", json!({"rows": ["Date"], "values": ["Sales"], "destination": "Sheet1!F3"})).unwrap();
+        let before: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels" && x != "Grand Total").collect();
+        assert_eq!(before.len(), 3, "the text item is in the report before filtering, got {before:?}");
+        s.execute("pivot.timeline", json!({"field": "Date", "start": "2026-01-01", "end": "2026-12-31"})).unwrap();
+        let after: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels" && x != "Grand Total").collect();
+        assert_eq!(after.len(), 2, "the two 2026 dates stay and the undateable value goes, got {after:?}");
+        assert!(!after.iter().any(|x| x.contains("TBD")), "an undateable value is outside a bounded range, got {after:?}");
+    }
+
+    #[test]
+    fn a_value_filter_matching_nothing_leaves_the_report_empty() {
+        // An "above every aggregate" filter used to refill its allowed set with every item, so the
+        // filter silently did nothing.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"source": "Sheet1!A1:E13", "rows": ["Region"], "values": ["Sales"], "destination": "Sheet1!G3"}))
+            .unwrap();
+        s.execute("pivot.filter", json!({"field": "Region", "above": 1e9})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        let r = sh.pivots[0].last_range.unwrap();
+        let labels: Vec<String> = (r.start.row + 1..=r.end.row).map(|x| sh.value(CellRef::new(x, r.start.col)).display()).collect();
+        assert_eq!(labels, vec!["Grand Total".to_string()], "every region is below 1e9, got {labels:?}");
     }
 
     #[test]

@@ -899,3 +899,23 @@ fn a_compatible_shared_cache_is_still_reused() {
     // Pivot 0 has its own cache; the two identical tables after it share one.
     assert_eq!(caches, 2, "one shared cache for the two identical tables, plus pivot 0's");
 }
+
+#[test]
+fn a_value_fields_base_survives_the_round_trip() {
+    // Difference From / % Difference From are computed from `base_field` / `base_item`. The writer
+    // used to emit a first-axis field and item 0, which the reader restored as None, so reopening
+    // a saved report compared against a different field or sibling.
+    let mut wb = workbook();
+    {
+        let pt = &mut wb.sheet_mut(1).unwrap().pivots[2];
+        let v = pt.values.first_mut().unwrap();
+        v.show_as = PivotShowAs::DifferenceFrom;
+        v.base_field = Some("Units".into());
+        v.base_item = Some("B".into());
+    }
+    let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
+    let v = &back.sheet(1).unwrap().pivots[2].values[0];
+    assert_eq!(v.show_as, PivotShowAs::DifferenceFrom, "the mode survives");
+    assert_eq!(v.base_field.as_deref(), Some("Units"), "the base value field survives");
+    assert_eq!(v.base_item.as_deref(), Some("B"), "the base item survives");
+}

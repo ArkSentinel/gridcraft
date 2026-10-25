@@ -1177,6 +1177,22 @@ fn pt_settings_xml(pt: &PivotTable) -> String {
         let _ =
             write!(body, "<gc:calculatedItem field=\"{}\" name=\"{}\" formula=\"{}\"/>", esc_attr(&c.field), esc_attr(&c.name), esc_attr(&c.formula));
     }
+    // A value field's base for Difference From / % Difference From. GridCraft's base is another
+    // *value* field, which OOXML's `baseField` (an axis field index) cannot express, so it is kept
+    // here; the standard attributes on `<dataField>` stay as they are for Excel's benefit.
+    for (i, v) in pt.values.iter().enumerate() {
+        if v.base_field.is_none() && v.base_item.is_none() {
+            continue;
+        }
+        let _ = write!(body, "<gc:valueBase index=\"{i}\"");
+        if let Some(bf) = &v.base_field {
+            let _ = write!(body, " baseField=\"{}\"", esc_attr(bf));
+        }
+        if let Some(bi) = &v.base_item {
+            let _ = write!(body, " baseItem=\"{}\"", esc_attr(bi));
+        }
+        body.push_str("/>");
+    }
     for f in pt.filters.iter().filter(|f| f.value_filter.is_some()) {
         let Some(vf) = f.value_filter.as_ref() else { continue };
         let _ = write!(body, "<gc:valueFilter field=\"{}\" n=\"{}\"", esc_attr(&f.source_col), vf.n);
@@ -1694,7 +1710,26 @@ fn read_table(cx: &mut Ctx<'_>, x: &El, cache: &CacheIn, id: u32) -> Option<Pivo
             pt.calculated_fields.push(PivotCalcField { name: f.name.clone(), formula });
         }
     }
-
+    // Value-field bases from GridCraft's extension (see `pt_settings_xml`). Read here, after
+    // `pt.values` exists, since the element indexes into it.
+    if let Some(settings) = x
+        .child("extLst")
+        .into_iter()
+        .flat_map(|l| l.kids("ext"))
+        .find(|e| e.attr("uri").is_some_and(|u| same(u, EXT_GRIDCRAFT)))
+        .and_then(|e| e.child("pivotSettings"))
+    {
+        for b in settings.kids("valueBase") {
+            let Some(i) = b.attr_u32("index").map(|i| i as usize) else { continue };
+            let Some(v) = pt.values.get_mut(i) else { continue };
+            if let Some(bf) = b.attr("baseField") {
+                v.base_field = Some(bf.to_string());
+            }
+            if let Some(bi) = b.attr("baseItem") {
+                v.base_item = Some(bi.to_string());
+            }
+        }
+    }
     pt.anchor = loc.start;
     let above = if pages.is_empty() { 0 } else { pages.len() as u32 + 1 };
     pt.last_range = Some(RangeRef::new(CellRef::new(loc.start.row.saturating_sub(above), loc.start.col), loc.end));

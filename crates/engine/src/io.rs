@@ -782,9 +782,7 @@ mod tests {
     fn save_fails_upfront_when_the_temp_name_is_taken() {
         // Another local user who can write the directory must not be able to point the
         // save's predictable temporary name at their own file: creation is exclusive.
-        let dir = std::env::temp_dir().join(format!("gridcraft-fs-safety-temp-name-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_dir("fs-safety");
         let victim = dir.join("victim.txt");
         std::fs::write(&victim, b"original").unwrap();
         let dest = dir.join("book.xlsx");
@@ -800,9 +798,7 @@ mod tests {
     #[test]
     fn save_keeps_the_destination_access_restrictions() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("gridcraft-fs-safety-permissions-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_dir("fs-mode");
         let dest = dir.join("private.xlsx");
         std::fs::write(&dest, b"v1").unwrap();
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -831,9 +827,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn open_refuses_directories_and_unknowable_lengths() {
-        let dir = std::env::temp_dir().join(format!("gridcraft-fs-safety-open-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_dir("fs-open");
         assert!(read_file(dir.to_str().unwrap()).is_err(), "a directory is not a regular file");
         assert!(read_file(dir.join("missing").to_str().unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1061,6 +1055,28 @@ mod tests {
         }
         let (wb, _) = open_bytes("Sales.csv", b"1\n").unwrap();
         assert_eq!(wb.sheets[0].name, "Sales");
+    }
+
+    /// A fresh, exclusively created directory for one test run. Tests in one binary share a process
+    /// id and run in parallel, so the pid alone is not unique; a directory that already exists is
+    /// another test's (or another run's), never reused.
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let base = std::env::temp_dir();
+        loop {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let dir = base.join(format!("gridcraft-{tag}-{}-{n}", std::process::id()));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                    return dir;
+                }
+            }
+        }
     }
 
     /// A save that can't be put in place (here a folder already has the workbook's name, as

@@ -132,7 +132,8 @@ fn an_unsorted_field_keeps_source_order() {
     // A refresh must not reshuffle it.
     for _ in 0..3 {
         s.execute("pivot.refresh", json!({})).unwrap();
-        assert_eq!(labels(&s), l, "the order is stable across refreshes");
+        let again: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels").collect();
+        assert_eq!(again, l, "the order is stable across refreshes");
     }
 }
 
@@ -178,4 +179,28 @@ fn number_bins_survive_saving_and_reopening() {
     let (back, _) = gridcraft_xlsx::read_xlsx(&bytes).unwrap();
     let pt = &back.sheet(0).unwrap().pivots[0];
     assert_eq!(pt.rows[0].group_bins, Some((0.0, 10.0)), "the bin size survives the save");
+}
+
+#[test]
+fn items_shown_with_no_data_keep_source_order() {
+    // "Plums" only sells pears, and the page filter hides pears: its rows reach the report only
+    // through the show-items-with-no-data pass. That pass used `first = 0` for every item it added,
+    // so under `sort: none` such an item sorted ahead of everything instead of by source order.
+    let mut s = Session::new();
+    s.new_workbook();
+    let rows = json!([["Region", "Product", "Sales"], ["West", "Apples", 1], ["East", "Apples", 2], ["North", "Apples", 3], ["Plums", "Pears", 4],]);
+    s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+    s.execute("selection.set", json!({"range": "A1"})).unwrap();
+    s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "filters": ["Product"], "destination": "Sheet1!H3"})).unwrap();
+    s.execute("pivot.filter", json!({"field": "Product", "selected": ["Apples"]})).unwrap();
+    s.execute("pivot.sort", json!({"field": "Region", "order": "none"})).unwrap();
+    s.execute("pivot.layout", json!({"showItemsWithNoData": true})).unwrap();
+    // The page field sits above, so the first label row is the header.
+    let l: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels").collect();
+    assert_eq!(l, vec!["West".to_string(), "East".to_string(), "North".to_string(), "Plums".to_string()], "source order, got {l:?}");
+    for _ in 0..3 {
+        s.execute("pivot.refresh", json!({})).unwrap();
+        let again: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels").collect();
+        assert_eq!(again, l, "the order is stable across refreshes");
+    }
 }

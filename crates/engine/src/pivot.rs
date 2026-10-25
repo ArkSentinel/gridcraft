@@ -1127,12 +1127,8 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                 // but cap to n if no ties? keep ties
             }
         }
-        if set.is_empty() {
-            // no filter effect
-            for (label, _) in &items {
-                set.insert(label.clone());
-            }
-        }
+        // An empty set means the filter leaves nothing (e.g. "above" past every aggregate); filling
+        // it back in would silently turn the filter off.
         allowed.insert(f.source_col.clone(), set);
     }
 
@@ -1259,7 +1255,7 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             let hidden = own.and_then(|(_, x, _, _)| x.selected.as_ref());
             let allowed_set = allowed.get(&f.source_col);
             let items = if on_rows { &mut row_items } else { &mut col_items };
-            for rec in &src.rows {
+            for (ri, rec) in src.rows.iter().enumerate() {
                 let v = rec.get(*c).unwrap_or(&Value::Empty);
                 let label = item_label(wb, v, f.date_group, &fmt);
                 if hidden.is_some_and(|sel| !sel.iter().any(|x| x.eq_ignore_ascii_case(&label))) {
@@ -1269,7 +1265,9 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                     continue;
                 }
                 if let Some(fi) = items.first_mut() {
-                    fi.intern(wb, v, f.date_group, &fmt, 0);
+                    // The source index, as the main pass records it: with `sort: none` these items
+                    // sort by first appearance, and 0 for all of them made their order random.
+                    fi.intern(wb, v, f.date_group, &fmt, ri);
                 }
             }
             let n = items.first().map(|fi| fi.items.len()).unwrap_or(0);
@@ -2110,7 +2108,10 @@ pub fn timeline_labels(wb: &Workbook, pt: &PivotTable, src: &Source, field: &str
             (Some(d), Some(s), None) => d >= s,
             (Some(d), None, Some(e)) => d <= e,
             (Some(_), None, None) => true,
-            (None, _, _) => true, // keep unknowns
+            // A bounded range can't place an undateable value, so it is excluded; an open-ended one
+            // keeps them, since there is no range to be outside of.
+            (None, Some(_), Some(_)) => false,
+            (None, _, _) => true,
         };
         if !in_range {
             continue;
