@@ -113,6 +113,7 @@ to check our files, and Windows machines with the reported GPU drivers.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | PivotTables: field-list drag & drop (reorder/move/drag-out) and the Value Field Settings dialog; all twelve show-values-as modes, value filters, bins, text groups, hours/minutes/seconds, sort-by-field, calculated items; new settings round-trip in XLSX |
 | 2026-10-23 | minor | Measuring: tests run through `cargo xtask test` |
 | 2026-10-11 | minor | PivotTable calculated fields landed |
 | 2026-10-10 | minor | Current focus and M15 updated for the 10-10 merges |

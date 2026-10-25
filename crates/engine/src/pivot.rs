@@ -5,6 +5,7 @@
 //! Compact/Outline/Tabular layouts, subtotals, grand totals, show-values-as); the code and the
 //! look (our own palette) are original.
 
+use chrono::NaiveDate;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
@@ -189,6 +190,8 @@ struct Item {
 struct FieldItems {
     items: Vec<Item>,
     index: HashMap<String, u32>,
+    bins: Option<(f64, f64)>,
+    groups: Vec<Vec<String>>,
 }
 
 fn cmp_items(a: &Item, b: &Item) -> Ordering {
@@ -220,6 +223,9 @@ fn make_item(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: 
                         (format!("Qtr{q}"), q as f64)
                     }
                     PivotDateGroup::Months => (mon.to_string(), dt.month as f64),
+                    PivotDateGroup::Hours => (format!("{:02}", dt.hour), dt.hour as f64),
+                    PivotDateGroup::Minutes => (format!("{:02}", dt.minute), dt.minute as f64),
+                    PivotDateGroup::Seconds => (format!("{:02}", dt.second), dt.second as f64),
                     _ => (format!("{}-{mon}", dt.day), (dt.month * 100 + dt.day) as f64),
                 };
                 return (format!("g{key}"), it(Value::text(label.as_str()), label, 0, key, false));
@@ -239,6 +245,48 @@ fn make_item(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: 
 
 impl FieldItems {
     fn intern(&mut self, wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: usize) -> u32 {
+        // Number bins: bucket a number into [start, start+size) intervals.
+        if let (Some((start, size)), Value::Number(n)) = (self.bins, v) {
+            let idx = ((*n - start) / size).floor() as i64;
+            let lo = start + idx as f64 * size;
+            let hi = lo + size;
+            let label = format!("{lo}-{hi}");
+            let key = format!("b{}", lo.to_bits());
+            if let Some(i) = self.index.get(&key) {
+                return *i;
+            }
+            let item = Item { text: label.to_lowercase(), value: Value::text(label.clone()), label, class: 0, num: lo, first, formatted: false };
+            let i = self.items.len() as u32;
+            self.items.push(item);
+            self.index.insert(key, i);
+            return i;
+        }
+        // Manual text grouping: map an item into its group label.
+        if !self.groups.is_empty()
+            && let Value::Text(t) = v
+        {
+            for g in &self.groups {
+                let (name, items) = if g.len() > 1 && g[1..].iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    (g[0].clone(), &g[1..])
+                } else {
+                    // no explicit name: group named after its first item
+                    (g[0].clone(), &g[..])
+                };
+                if items.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    let label = name;
+                    let key = format!("g{}", label.to_lowercase());
+                    if let Some(i) = self.index.get(&key) {
+                        return *i;
+                    }
+                    let item =
+                        Item { text: label.to_lowercase(), value: Value::text(label.clone()), label, class: 1, num: 0.0, first, formatted: false };
+                    let i = self.items.len() as u32;
+                    self.items.push(item);
+                    self.index.insert(key, i);
+                    return i;
+                }
+            }
+        }
         let (key, item) = make_item(wb, v, group, fmt, first);
         if let Some(i) = self.index.get(&key) {
             return *i;
@@ -393,7 +441,13 @@ struct Node {
     children: Vec<Node>,
 }
 
-fn build_tree(paths: &[&[u32]], depth: usize, fields: &[&PivotField], items: &[FieldItems]) -> Vec<Node> {
+fn build_tree(
+    paths: &[&[u32]],
+    depth: usize,
+    fields: &[&PivotField],
+    items: &[FieldItems],
+    sort_keys: &[Option<std::collections::HashMap<(Vec<u32>, u32), f64>>],
+) -> Vec<Node> {
     let (Some(field), Some(fi)) = (fields.get(depth), items.get(depth)) else { return vec![] };
     let mut order: Vec<u32> = Vec::new();
     let mut groups: HashMap<u32, Vec<&[u32]>> = HashMap::new();
@@ -410,16 +464,37 @@ fn build_tree(paths: &[&[u32]], depth: usize, fields: &[&PivotField], items: &[F
         .into_iter()
         .map(|it| {
             let ps = groups.remove(&it).unwrap_or_default();
-            Node { item: it, children: build_tree(&ps, depth + 1, fields, items) }
+            Node { item: it, children: build_tree(&ps, depth + 1, fields, items, sort_keys) }
         })
         .collect();
-    let by = |a: &Node, b: &Node| match (fi.get(a.item), fi.get(b.item)) {
-        (Some(x), Some(y)) => match field.sort {
-            PivotSort::Asc => cmp_items(x, y),
-            PivotSort::Desc => cmp_items(y, x),
-            PivotSort::None => x.first.cmp(&y.first),
-        },
-        _ => Ordering::Equal,
+    let prefix: Vec<u32> = paths.first().map(|p| p[..depth.min(p.len())].to_vec()).unwrap_or_default();
+    let by = |a: &Node, b: &Node| {
+        if !field.custom_order.is_empty() {
+            let pos = |it: u32| {
+                field.custom_order.iter().position(|x| fi.get(it).map(|i| i.label.eq_ignore_ascii_case(x)).unwrap_or(false)).unwrap_or(usize::MAX)
+            };
+            return pos(a.item).cmp(&pos(b.item));
+        }
+        // Sort by another value field's aggregate when requested.
+        if let Some(Some(map)) = sort_keys.get(depth) {
+            let ka = map.get(&(prefix.clone(), a.item)).copied().unwrap_or(0.0);
+            let kb = map.get(&(prefix.clone(), b.item)).copied().unwrap_or(0.0);
+            let r = match field.sort {
+                PivotSort::Desc => kb.total_cmp(&ka),
+                _ => ka.total_cmp(&kb),
+            };
+            if r != Ordering::Equal {
+                return r;
+            }
+        }
+        match (fi.get(a.item), fi.get(b.item)) {
+            (Some(x), Some(y)) => match field.sort {
+                PivotSort::Asc => cmp_items(x, y),
+                PivotSort::Desc => cmp_items(y, x),
+                PivotSort::None => x.first.cmp(&y.first),
+            },
+            _ => Ordering::Equal,
+        }
     };
     nodes.sort_by(by);
     nodes
@@ -534,6 +609,7 @@ enum LineKind {
     Item(bool),
     Subtotal,
     Grand,
+    Blank,
 }
 
 struct Line {
@@ -731,7 +807,7 @@ impl Ctx<'_> {
         for (i, node) in nodes.iter().enumerate() {
             prefix.push(node.item);
             let (v, fmt, label) = self.label_cell(depth, node.item);
-            let mut labels: Vec<(usize, Value, u8, Option<String>)> = if i == 0 { pending.to_vec() } else { vec![] };
+            let mut labels: Vec<(usize, Value, u8, Option<String>)> = if i == 0 || self.pt.repeat_item_labels { pending.to_vec() } else { vec![] };
             labels.push((col, v, 0, fmt));
             let collapsed = depth + 1 < n && self.rows.get(depth).is_some_and(|f| is_collapsed(f, &label));
             if depth + 1 >= n || collapsed || node.children.is_empty() {
@@ -929,8 +1005,10 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     let row_levels = rows.len() + usize::from(on_rows);
 
     // ---- aggregate
-    let mut row_items: Vec<FieldItems> = rows.iter().map(|_| FieldItems::default()).collect();
-    let mut col_items: Vec<FieldItems> = cols.iter().map(|_| FieldItems::default()).collect();
+    let mut row_items: Vec<FieldItems> =
+        rows.iter().map(|(_, f)| FieldItems { bins: f.group_bins, groups: f.grouped_items.clone(), ..FieldItems::default() }).collect();
+    let mut col_items: Vec<FieldItems> =
+        cols.iter().map(|(_, f)| FieldItems { bins: f.group_bins, groups: f.grouped_items.clone(), ..FieldItems::default() }).collect();
     let mut aggs: AggMap = HashMap::new();
     let mut row_set: HashSet<Vec<u32>> = HashSet::new();
     let mut col_set: HashSet<Vec<u32>> = HashSet::new();
@@ -938,11 +1016,180 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     let filter_fmts: Vec<String> = filters.iter().map(|f| fmt_of(f.0)).collect();
     let row_fmts: Vec<String> = rows.iter().map(|(c, _)| fmt_of(*c)).collect();
     let col_fmts: Vec<String> = cols.iter().map(|(c, _)| fmt_of(*c)).collect();
+    // ---- value filters: pre-scan items, compute per-item aggregates, determine allowed sets
+    // Pre-scan: populate row_items/col_items for all records (respecting label filters).
+    for rec in &src.rows {
+        let mut skip = false;
+        for (c, f, g, _) in &filters {
+            if let Some(sel) = &f.selected {
+                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, &fmt_of(*c));
+                if !sel.iter().any(|x| x.eq_ignore_ascii_case(&label)) {
+                    skip = true;
+                    break;
+                }
+            }
+        }
+        if skip {
+            continue;
+        }
+        let mut rp = Vec::with_capacity(rows.len());
+        for (((c, f), fi), fmt) in rows.iter().zip(row_items.iter_mut()).zip(row_fmts.iter()) {
+            rp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), f.date_group, fmt, 0));
+        }
+        let mut cp = Vec::with_capacity(cols.len());
+        for (((c, f), fi), fmt) in cols.iter().zip(col_items.iter_mut()).zip(col_fmts.iter()) {
+            cp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), f.date_group, fmt, 0));
+        }
+        let _ = (rp, cp);
+    }
+    // First pass: per-item aggregates for value-filtered fields.
+    let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, f64>> = std::collections::HashMap::new();
+    for rec in &src.rows {
+        let mut skip = false;
+        for (c, f, g, _) in &filters {
+            if let Some(sel) = &f.selected {
+                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, &fmt_of(*c));
+                if !sel.iter().any(|x| x.eq_ignore_ascii_case(&label)) {
+                    skip = true;
+                    break;
+                }
+            }
+        }
+        if skip {
+            continue;
+        }
+        for (c, f, g, _) in &filters {
+            if f.value_filter.is_none() {
+                continue;
+            }
+            let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, &fmt_of(*c));
+            let Some(vf) = f.value_filter.as_ref() else {
+                continue;
+            };
+            let vi = if let Some(bf) = &vf.by_field {
+                vals.iter().position(|(_, v)| v.name.eq_ignore_ascii_case(bf) || v.source_col.eq_ignore_ascii_case(bf)).unwrap_or(0)
+            } else {
+                0
+            };
+            let valnum = if vi < vals.len() {
+                // find source col for value field
+                match &vals[vi].0 {
+                    ValSrc::Col(cc) => rec.get(*cc).unwrap_or(&Value::Empty).as_f64().unwrap_or(0.0),
+                    _ => 0.0,
+                }
+            } else {
+                0.0
+            };
+            item_agg.entry(f.source_col.clone()).or_default().entry(label.clone()).or_insert(0.0);
+            if let Some(m) = item_agg.get_mut(&f.source_col)
+                && let Some(x) = m.get_mut(&label)
+            {
+                *x += valnum;
+            }
+        }
+    }
+    // Determine allowed sets.
+    let mut allowed: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    for (_, f, _, _) in &filters {
+        let Some(vf) = &f.value_filter else {
+            continue;
+        };
+        let agg = item_agg.get(&f.source_col).cloned().unwrap_or_default();
+        let mut items: Vec<(String, f64)> = agg.into_iter().collect();
+        // sort
+        if vf.bottom {
+            items.sort_by(|a, b| a.1.total_cmp(&b.1));
+        } else {
+            items.sort_by(|a, b| b.1.total_cmp(&a.1));
+        }
+        let mut set = std::collections::HashSet::new();
+        if vf.top_percent {
+            let n = ((items.len() as f64) * (vf.n as f64) / 100.0).ceil() as usize;
+            for (label, _) in items.iter().take(n.max(1)) {
+                set.insert(label.clone());
+            }
+        } else if vf.above.is_some() || vf.below.is_some() || vf.between_lo.is_some() {
+            for (label, v) in &items {
+                let mut ok = true;
+                if let Some(a) = vf.above
+                    && *v <= a
+                {
+                    ok = false;
+                }
+                if let Some(b) = vf.below
+                    && *v >= b
+                {
+                    ok = false;
+                }
+                if let (Some(lo), Some(hi)) = (vf.between_lo, vf.between_hi)
+                    && (*v < lo || *v > hi)
+                {
+                    ok = false;
+                }
+                if ok {
+                    set.insert(label.clone());
+                }
+            }
+        } else {
+            let n = vf.n as usize;
+            // include ties at boundary
+            if n == 0 || items.is_empty() {
+                for (label, _) in &items {
+                    set.insert(label.clone());
+                }
+            } else {
+                let threshold = items.get(n.saturating_sub(1)).map(|x| x.1).unwrap_or(f64::MIN);
+                for (label, v) in &items {
+                    if vf.bottom {
+                        if *v <= threshold {
+                            set.insert(label.clone());
+                        }
+                    } else if *v >= threshold {
+                        set.insert(label.clone());
+                    }
+                }
+                // but cap to n if no ties? keep ties
+            }
+        }
+        if set.is_empty() {
+            // no filter effect
+            for (label, _) in &items {
+                set.insert(label.clone());
+            }
+        }
+        allowed.insert(f.source_col.clone(), set);
+    }
+
+    // Sort-by-value: resolve each axis field's `sort_by` to a source column and seed an
+    // aggregate map keyed by (prefix, item) -> sum. shortcut: aggregates are raw sums, which
+    // matches the default Sum function; calculated-value fields are skipped.
+    let resolve_sort_col = |name: &str| -> Option<usize> {
+        if let Some(c) = src.col(name) {
+            return Some(c);
+        }
+        vals.iter().find(|(_, v)| v.source_col.eq_ignore_ascii_case(name)).and_then(|(vs, _)| match vs {
+            ValSrc::Col(c) => Some(*c),
+            _ => None,
+        })
+    };
+    let row_sort_cols: Vec<Option<usize>> = rows.iter().map(|(_, f)| f.sort_by.as_deref().and_then(resolve_sort_col)).collect();
+    let col_sort_cols: Vec<Option<usize>> = cols.iter().map(|(_, f)| f.sort_by.as_deref().and_then(resolve_sort_col)).collect();
+    let mut row_sort_keys: Vec<Option<std::collections::HashMap<(Vec<u32>, u32), f64>>> =
+        row_sort_cols.iter().map(|c| c.map(|_| std::collections::HashMap::new())).collect();
+    let mut col_sort_keys: Vec<Option<std::collections::HashMap<(Vec<u32>, u32), f64>>> =
+        col_sort_cols.iter().map(|c| c.map(|_| std::collections::HashMap::new())).collect();
+
     'rec: for (ri, rec) in src.rows.iter().enumerate() {
         for ((c, f, g, _), fmt) in filters.iter().zip(filter_fmts.iter()) {
             if let Some(sel) = &f.selected {
                 let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, fmt);
                 if !sel.iter().any(|s| s.eq_ignore_ascii_case(&label)) {
+                    continue 'rec;
+                }
+            }
+            if let Some(set) = allowed.get(&f.source_col) {
+                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, fmt);
+                if !set.contains(&label) {
                     continue 'rec;
                 }
             }
@@ -971,6 +1218,32 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                 }
             }
         }
+        // Accumulate sort-by-value aggregates per (prefix, item).
+        for (i, col) in row_sort_cols.iter().enumerate() {
+            if let Some(c) = *col
+                && let Some(entry) = row_sort_keys[i].as_mut()
+            {
+                let val = match rec.get(c) {
+                    Some(Value::Number(n)) => *n,
+                    Some(Value::Text(t)) => t.parse().unwrap_or(0.0),
+                    _ => 0.0,
+                };
+                entry.entry((rp[..i].to_vec(), rp[i])).and_modify(|x| *x += val).or_insert(val);
+            }
+        }
+        for (i, col) in col_sort_cols.iter().enumerate() {
+            if let Some(c) = *col
+                && let Some(entry) = col_sort_keys[i].as_mut()
+            {
+                let val = match rec.get(c) {
+                    Some(Value::Number(n)) => *n,
+                    Some(Value::Text(t)) => t.parse().unwrap_or(0.0),
+                    _ => 0.0,
+                };
+                entry.entry((cp[..i].to_vec(), cp[i])).and_modify(|x| *x += val).or_insert(val);
+            }
+        }
+
         // The column leaf this record lands in: its path cut after the first collapsed item (as in `flatten_cols`).
         let shown = cols
             .iter()
@@ -995,13 +1268,40 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
         }
     }
 
+    // Show items with no data: best-effort for worksheet sources (Excel limits this to OLAP).
+    // Only safe for a single axis field, where we can intern every distinct source value and add
+    // it as its own row/column without creating bogus combinations.
+    // shortcut: single-axis only; multi-axis and OLAP shared caches are not handled.
+    if rows.len() == 1 && pt.show_items_with_no_data {
+        let (c, f) = rows[0];
+        let fmt = row_fmts.first().cloned().unwrap_or_else(|| "General".into());
+        for rec in &src.rows {
+            row_items[0].intern(wb, rec.get(c).unwrap_or(&Value::Empty), f.date_group, &fmt, 0);
+        }
+        let n = row_items[0].items.len();
+        for i in 0..n {
+            row_set.insert(vec![i as u32]);
+        }
+    }
+    if cols.len() == 1 && pt.show_items_with_no_data {
+        let (c, f) = cols[0];
+        let fmt = col_fmts.first().cloned().unwrap_or_else(|| "General".into());
+        for rec in &src.rows {
+            col_items[0].intern(wb, rec.get(c).unwrap_or(&Value::Empty), f.date_group, &fmt, 0);
+        }
+        let n = col_items[0].items.len();
+        for i in 0..n {
+            col_set.insert(vec![i as u32]);
+        }
+    }
+
     // ---- axes
     let row_fields: Vec<&PivotField> = rows.iter().map(|(_, f)| *f).collect();
     let col_fields: Vec<&PivotField> = cols.iter().map(|(_, f)| *f).collect();
     let row_paths: Vec<&[u32]> = row_set.iter().map(Vec::as_slice).collect();
     let col_paths: Vec<&[u32]> = col_set.iter().map(Vec::as_slice).collect();
-    let row_tree = build_tree(&row_paths, 0, &row_fields, &row_items);
-    let col_tree = build_tree(&col_paths, 0, &col_fields, &col_items);
+    let row_tree = build_tree(&row_paths, 0, &row_fields, &row_items, &row_sort_keys);
+    let col_tree = build_tree(&col_paths, 0, &col_fields, &col_items, &col_sort_keys);
     let mut siblings: HashMap<Vec<u32>, Vec<u32>> = HashMap::new();
     collect_siblings(&row_tree, &mut Vec::new(), &mut siblings);
     let level0: Vec<u32> = row_tree.iter().map(|n| n.item).collect();
@@ -1236,9 +1536,17 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     let data_fmt: Vec<Option<String>> = vals
         .iter()
         .map(|(vs, v)| match v.show_as {
-            PivotShowAs::PercentOfGrandTotal | PivotShowAs::PercentOfColumnTotal | PivotShowAs::PercentOfRowTotal => {
-                Some(v.number_format.clone().unwrap_or_else(|| "0.00%".into()))
-            }
+            PivotShowAs::PercentOfGrandTotal
+            | PivotShowAs::PercentOfColumnTotal
+            | PivotShowAs::PercentOfRowTotal
+            | PivotShowAs::PercentOf
+            | PivotShowAs::PercentDifferenceFrom
+            | PivotShowAs::PercentRunningTotalIn => Some(match &v.number_format {
+                // A percent mode always shows a percent: an explicit format without `%` would
+                // print a ratio as a plain number (Excel switches the format to percentage).
+                Some(f) if f.contains('%') => f.clone(),
+                _ => "0.00%".into(),
+            }),
             PivotShowAs::Rank => v.number_format.clone(),
             _ => v.number_format.clone().or_else(|| match v.func {
                 PivotFunc::Count | PivotFunc::CountNumbers => None,
@@ -1281,16 +1589,33 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     } else {
         Some(row_levels.saturating_sub(1) as u32)
     };
+    if pt.blank_lines {
+        let mut out = Vec::with_capacity(lines.len() + 4);
+        let mut prev_top = false;
+        for line in lines.drain(..) {
+            let is_top = line.path.len() <= 1 && matches!(line.kind, LineKind::Item(_));
+            if is_top && prev_top {
+                out.push(Line { kind: LineKind::Blank, leaf: false, path: vec![], values: false, labels: vec![], vi: None });
+            }
+            if is_top {
+                prev_top = true;
+            }
+            out.push(line);
+        }
+        lines = out;
+    }
     for line in &lines {
         let rk = match line.kind {
             LineKind::Item(b) => RowKind::Item(b),
             LineKind::Subtotal => RowKind::Subtotal,
             LineKind::Grand => RowKind::Grand,
+            LineKind::Blank => RowKind::Blank,
         };
         let ck = match line.kind {
             LineKind::Item(_) => (CellKind::RowLabel, CellKind::Data),
             LineKind::Subtotal => (CellKind::Subtotal, CellKind::Subtotal),
             LineKind::Grand => (CellKind::GrandTotal, CellKind::GrandTotal),
+            LineKind::Blank => (CellKind::Empty, CellKind::Empty),
         };
         let r = g.push_row(rk)?;
         if line.leaf && k > 0 {
@@ -1314,6 +1639,90 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                 PivotShowAs::PercentOfGrandTotal => ratio(raw, get(&[], &[], *vi)),
                 PivotShowAs::PercentOfColumnTotal => ratio(raw, get(&[], cp, *vi)),
                 PivotShowAs::PercentOfRowTotal => ratio(raw, get(rp, &[], *vi)),
+                PivotShowAs::PercentOf => {
+                    let base_vi = vdef
+                        .base_field
+                        .as_deref()
+                        .and_then(|bf| vals.iter().position(|(_, v)| v.name.eq_ignore_ascii_case(bf) || v.source_col.eq_ignore_ascii_case(bf)))
+                        .unwrap_or(*vi);
+                    ratio(raw, get(&[], &[], base_vi))
+                }
+                PivotShowAs::DifferenceFrom => {
+                    let base_val: Option<Value> = {
+                        let parent = if rp.is_empty() { None } else { Some(&rp[..rp.len().saturating_sub(1)]) };
+                        let sibs = parent.map(|p| siblings.get(p).cloned().unwrap_or_default()).unwrap_or_else(|| level0.clone());
+                        let pos = rp.last().copied().and_then(|last| sibs.iter().position(|x| *x == last)).unwrap_or(0);
+                        let base_idx = if let Some(bi) = &vdef.base_item {
+                            sibs.iter()
+                                .position(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
+                                .unwrap_or(pos)
+                        } else if pos > 0 {
+                            pos - 1
+                        } else {
+                            0
+                        };
+                        // resolve label matching for base_item
+                        let chosen = if let Some(bi) = &vdef.base_item {
+                            sibs.iter()
+                                .copied()
+                                .find(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
+                                .unwrap_or_else(|| sibs.get(base_idx).copied().unwrap_or(0))
+                        } else {
+                            sibs.get(base_idx).copied().unwrap_or(0)
+                        };
+                        let mut base_path = rp.to_vec();
+                        if let Some(last) = base_path.last_mut() {
+                            *last = chosen;
+                        }
+                        if base_path == *rp { None } else { get(&base_path, cp, *vi) }
+                    };
+                    match (raw.clone(), base_val) {
+                        (Value::Number(x), Some(Value::Number(y))) => Value::number(x - y),
+                        (Value::Error(e), _) => Value::Error(e),
+                        (v, _) => v,
+                    }
+                }
+                PivotShowAs::PercentDifferenceFrom => {
+                    let base_val: Option<Value> = {
+                        let parent = if rp.is_empty() { None } else { Some(&rp[..rp.len().saturating_sub(1)]) };
+                        let sibs = parent.map(|p| siblings.get(p).cloned().unwrap_or_default()).unwrap_or_else(|| level0.clone());
+                        let pos = rp.last().copied().and_then(|last| sibs.iter().position(|x| *x == last)).unwrap_or(0);
+                        let base_idx = if let Some(bi) = &vdef.base_item {
+                            sibs.iter()
+                                .position(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
+                                .unwrap_or(pos)
+                        } else if pos > 0 {
+                            pos - 1
+                        } else {
+                            0
+                        };
+                        // resolve label matching for base_item
+                        let chosen = if let Some(bi) = &vdef.base_item {
+                            sibs.iter()
+                                .copied()
+                                .find(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
+                                .unwrap_or_else(|| sibs.get(base_idx).copied().unwrap_or(0))
+                        } else {
+                            sibs.get(base_idx).copied().unwrap_or(0)
+                        };
+                        let mut base_path = rp.to_vec();
+                        if let Some(last) = base_path.last_mut() {
+                            *last = chosen;
+                        }
+                        if base_path == *rp { None } else { get(&base_path, cp, *vi) }
+                    };
+                    match (raw.clone(), base_val) {
+                        (Value::Number(x), Some(Value::Number(y))) => {
+                            if y == 0.0 {
+                                Value::Error(gridcraft_core::CellError::Div0)
+                            } else {
+                                Value::number((x - y) / y)
+                            }
+                        }
+                        (Value::Error(e), _) => Value::Error(e),
+                        (v, _) => v,
+                    }
+                }
                 PivotShowAs::RunningTotal => match (rp.first(), &raw) {
                     (Some(first), Value::Number(_)) => {
                         let mut acc = 0.0;
@@ -1331,6 +1740,27 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                     }
                     _ => raw,
                 },
+                PivotShowAs::PercentRunningTotalIn => {
+                    let rt = match (rp.first(), &raw) {
+                        (Some(first), Value::Number(_)) => {
+                            let mut acc = 0.0;
+                            for it in &level0 {
+                                let mut p = rp.to_vec();
+                                if let Some(x) = p.first_mut() {
+                                    *x = *it;
+                                }
+                                acc += num(&get(&p, cp, *vi)).unwrap_or(0.0);
+                                if it == first {
+                                    break;
+                                }
+                            }
+                            acc
+                        }
+                        _ => raw.as_f64().unwrap_or(0.0),
+                    };
+                    let grand = num(&get(&[], &[], *vi)).unwrap_or(1.0);
+                    if grand == 0.0 { Value::Error(gridcraft_core::CellError::Div0) } else { Value::number(rt / grand) }
+                }
                 PivotShowAs::Rank => match (rp.split_last(), raw.as_f64()) {
                     (Some((_, parent)), Some(me)) => {
                         let sibs = siblings.get(parent).cloned().unwrap_or_default();
@@ -1347,6 +1777,42 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                     (None, _) => Value::Empty,
                     _ => raw,
                 },
+                PivotShowAs::RankAscending => match (rp.split_last(), raw.as_f64()) {
+                    (Some((_, parent)), Some(me)) => {
+                        let sibs = siblings.get(parent).cloned().unwrap_or_default();
+                        let mut rank = 1u64;
+                        for sib in sibs {
+                            let mut p = parent.to_vec();
+                            p.push(sib);
+                            if num(&get(&p, cp, *vi)).is_some_and(|x| x < me) {
+                                rank += 1;
+                            }
+                        }
+                        Value::number(rank as f64)
+                    }
+                    (None, _) => Value::Empty,
+                    _ => raw,
+                },
+                PivotShowAs::Index => {
+                    let row_total = num(&get(rp, &[], *vi)).unwrap_or(0.0);
+                    let col_total = num(&get(&[], cp, *vi)).unwrap_or(0.0);
+                    let grand = num(&get(&[], &[], *vi)).unwrap_or(0.0);
+                    match raw.as_f64() {
+                        Some(x) if row_total != 0.0 && col_total != 0.0 && grand != 0.0 => Value::number(x * grand / (row_total * col_total)),
+                        _ => raw,
+                    }
+                }
+                PivotShowAs::PercentOfParentRowTotal => {
+                    // Value over its parent row group's subtotal; at the top level the parent is
+                    // the grand total, as in Excel.
+                    let parent = rp.split_last().map(|(_, p)| p).unwrap_or(&[]);
+                    let base = num(&get(parent, cp, *vi)).unwrap_or(0.0);
+                    match raw.as_f64() {
+                        Some(x) if base != 0.0 => Value::number(x / base),
+                        Some(_) => Value::Error(gridcraft_core::CellError::Div0),
+                        None => raw,
+                    }
+                }
             };
             if let Some(pr) = probe.as_deref_mut() {
                 if pr.at == Some((r, l + j)) {
@@ -1356,6 +1822,13 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                     cells.insert((r, l + j));
                 }
             }
+            let shown = if shown == Value::Empty {
+                vdef.empty_display.clone().map(Value::text).unwrap_or(shown)
+            } else if matches!(shown, Value::Error(_)) {
+                vdef.error_display.clone().map(Value::text).unwrap_or(shown)
+            } else {
+                shown
+            };
             g.set(r, l + j, shown, ck.1, 0, data_fmt.get(*vi).cloned().flatten());
         }
     }
@@ -1657,6 +2130,64 @@ pub fn clear_output(wb: &mut Workbook, sheet: usize, idx: usize) {
     shm.take_cells(r);
     if let Some(p) = shm.pivots.get_mut(idx) {
         p.last_range = None;
+    }
+}
+
+/// Collect the interned labels of a date axis field whose underlying value falls within [start, end].
+pub fn timeline_labels(wb: &Workbook, pt: &PivotTable, src: &Source, field: &str, start: Option<&str>, end: Option<&str>) -> Vec<String> {
+    let axis = pt.rows.iter().chain(pt.columns.iter()).find(|f| f.source_col.eq_ignore_ascii_case(field));
+    let Some(f) = axis else {
+        return Vec::new();
+    };
+    let Some(c) = src.col(&f.source_col) else {
+        return Vec::new();
+    };
+    let fmt = src.formats.get(c).cloned().unwrap_or_else(|| "General".into());
+    let mut fi = FieldItems { bins: f.group_bins, groups: f.grouped_items.clone(), ..FieldItems::default() };
+    let parse_start = start.and_then(parse_date_str);
+    let parse_end = end.and_then(parse_date_str);
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for rec in &src.rows {
+        let v = rec.get(c).unwrap_or(&Value::Empty);
+        let d = value_to_date(wb, v);
+        let in_range = match (d, parse_start, parse_end) {
+            (Some(d), Some(s), Some(e)) => d >= s && d <= e,
+            (Some(d), Some(s), None) => d >= s,
+            (Some(d), None, Some(e)) => d <= e,
+            (Some(_), None, None) => true,
+            (None, _, _) => true, // keep unknowns
+        };
+        if !in_range {
+            continue;
+        }
+        let id = fi.intern(wb, v, f.date_group, &fmt, 0);
+        let label = fi.get(id).map(|it| it.label.clone()).unwrap_or_default();
+        if seen.insert(label.clone()) {
+            out.push(label);
+        }
+    }
+    out
+}
+
+fn parse_date_str(s: &str) -> Option<NaiveDate> {
+    let s = s.trim();
+    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%b %Y", "%B %Y", "%Y-%m", "%m/%Y"] {
+        if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
+            return Some(d);
+        }
+    }
+    None
+}
+
+fn value_to_date(wb: &Workbook, v: &Value) -> Option<NaiveDate> {
+    match v {
+        Value::Number(n) => {
+            gridcraft_core::date::datetime_from_serial(wb.date_system, *n).and_then(|dt| NaiveDate::from_ymd_opt(dt.year, dt.month, dt.day))
+        }
+        Value::Text(t) => parse_date_str(t),
+        _ => None,
     }
 }
 

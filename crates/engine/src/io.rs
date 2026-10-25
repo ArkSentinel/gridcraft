@@ -647,9 +647,11 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
-    if let Some(p) = &prior {
+    {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        opts.mode(p.mode());
+        // A new file gets the restrictive default (owner only), not whatever a permissive umask
+        // such as 0002 would give it.
+        opts.mode(prior.as_ref().map_or(0o600, std::fs::Permissions::mode));
     }
     let mut f = opts.open(&tmp).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);

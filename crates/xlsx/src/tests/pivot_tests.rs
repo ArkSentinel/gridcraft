@@ -105,7 +105,7 @@ fn workbook() -> Workbook {
                 ..PivotValue::default()
             },
         ],
-        filters: vec![PivotFilter { source_col: "Channel".into(), selected: Some(vec!["Online".into()]) }],
+        filters: vec![PivotFilter { source_col: "Channel".into(), selected: Some(vec!["Online".into()]), value_filter: None }],
         layout: PivotLayout::Tabular,
         enable_show_details: false,
         grand_totals_rows: false,
@@ -116,6 +116,11 @@ fn workbook() -> Workbook {
         show_headers: false,
         last_range: Some(rr("A2:H12")),
         calculated_fields: vec![],
+        calculated_items: vec![],
+        repeat_item_labels: false,
+        blank_lines: false,
+        show_items_with_no_data: false,
+        shared_cache: None,
         values_on_rows: false,
         values_position: None,
     };
@@ -127,8 +132,26 @@ fn workbook() -> Workbook {
         source: "SalesTbl".into(),
         anchor: at("K4"),
         rows: vec![
-            PivotField { source_col: "Date".into(), date_group: PivotDateGroup::Years, sort: PivotSort::None, collapsed_items: vec!["2024".into()] },
-            PivotField { source_col: "Date".into(), date_group: PivotDateGroup::Months, sort: PivotSort::Asc, collapsed_items: vec![] },
+            PivotField {
+                source_col: "Date".into(),
+                date_group: PivotDateGroup::Years,
+                sort: PivotSort::None,
+                group_bins: None,
+                grouped_items: vec![],
+                sort_by: None,
+                custom_order: vec![],
+                collapsed_items: vec!["2024".into()],
+            },
+            PivotField {
+                source_col: "Date".into(),
+                date_group: PivotDateGroup::Months,
+                sort: PivotSort::Asc,
+                group_bins: None,
+                grouped_items: vec![],
+                sort_by: None,
+                custom_order: vec![],
+                collapsed_items: vec![],
+            },
         ],
         columns: vec![PivotField { sort: PivotSort::Desc, ..field("Product") }],
         values: vec![
@@ -137,14 +160,32 @@ fn workbook() -> Workbook {
                 func: PivotFunc::Sum,
                 name: "Share".into(),
                 show_as: PivotShowAs::PercentOfGrandTotal,
+                base_field: None,
+                base_item: None,
+                error_display: None,
+                empty_display: None,
                 number_format: None,
             },
-            PivotValue { source_col: "Sales".into(), func: PivotFunc::Max, name: "Rank".into(), show_as: PivotShowAs::Rank, number_format: None },
+            PivotValue {
+                source_col: "Sales".into(),
+                func: PivotFunc::Max,
+                name: "Rank".into(),
+                show_as: PivotShowAs::Rank,
+                base_field: None,
+                base_item: None,
+                error_display: None,
+                empty_display: None,
+                number_format: None,
+            },
             PivotValue {
                 source_col: "Sales".into(),
                 func: PivotFunc::Average,
                 name: "Running".into(),
                 show_as: PivotShowAs::RunningTotal,
+                base_field: None,
+                base_item: None,
+                error_display: None,
+                empty_display: None,
                 number_format: None,
             },
             PivotValue {
@@ -152,6 +193,10 @@ fn workbook() -> Workbook {
                 func: PivotFunc::StdDevP,
                 name: "Spread".into(),
                 show_as: PivotShowAs::PercentOfColumnTotal,
+                base_field: None,
+                base_item: None,
+                error_display: None,
+                empty_display: None,
                 number_format: None,
             },
             PivotValue {
@@ -159,12 +204,16 @@ fn workbook() -> Workbook {
                 func: PivotFunc::VarP,
                 name: "RowPct".into(),
                 show_as: PivotShowAs::PercentOfRowTotal,
+                base_field: None,
+                base_item: None,
+                error_display: None,
+                empty_display: None,
                 number_format: None,
             },
         ],
         filters: vec![
-            PivotFilter { source_col: "Region".into(), selected: Some(vec!["East".into(), "North".into()]) },
-            PivotFilter { source_col: "Product".into(), selected: Some(vec!["A".into(), "B".into()]) },
+            PivotFilter { source_col: "Region".into(), selected: Some(vec!["East".into(), "North".into()]), value_filter: None },
+            PivotFilter { source_col: "Product".into(), selected: Some(vec!["A".to_string(), "B".to_string()]), value_filter: None },
         ],
         layout: PivotLayout::Outline,
         enable_show_details: true,
@@ -176,6 +225,11 @@ fn workbook() -> Workbook {
         show_headers: true,
         last_range: Some(rr("K2:Z30")),
         calculated_fields: vec![],
+        calculated_items: vec![],
+        repeat_item_labels: false,
+        blank_lines: false,
+        show_items_with_no_data: false,
+        shared_cache: None,
         values_on_rows: false,
         values_position: None,
     };
@@ -187,7 +241,7 @@ fn workbook() -> Workbook {
         anchor: at("AB1"),
         rows: vec![field("Product")],
         values: vec![PivotValue { source_col: "Units".into(), func: PivotFunc::Product, name: "Product of Units".into(), ..PivotValue::default() }],
-        filters: vec![PivotFilter { source_col: "Channel".into(), selected: None }],
+        filters: vec![PivotFilter { source_col: "Channel".into(), selected: None, value_filter: None }],
         last_range: Some(rr("AB1:AC6")),
         ..PivotTable::default()
     };
@@ -525,7 +579,7 @@ fn hostile_pivot_parts_warn_not_panic() {
     assert!(pt.values.iter().any(|v| v.func == PivotFunc::Sum && v.source_col == "V"));
     assert!(report.warnings.iter().any(|w| w.contains("bogus")), "{:?}", report.warnings);
     assert!(report.warnings.iter().any(|w| w.contains("grouping")), "{:?}", report.warnings);
-    assert!(report.warnings.iter().any(|w| w.contains("index")), "{:?}", report.warnings);
+    assert!(report.warnings.iter().any(|w| w.contains("percentOfParent")), "{:?}", report.warnings);
 }
 
 #[test]
@@ -744,4 +798,62 @@ fn two_value_fields_without_columns_hide_the_values_row() {
     let t = &one["xl/pivotTables/pivotTable1.xml"];
     assert!(t.contains("firstHeaderRow=\"1\""), "{t}");
     assert!(!t.contains("hideValuesRow"), "{t}");
+}
+
+#[test]
+fn pivot_settings_survive_a_round_trip() {
+    // These were all silently dropped: the grouping, the sort-by, the report toggles and the
+    // filters. Losing them means saving and reopening a grouped or filtered pivot loses the work.
+    let mut wb = workbook();
+    let pt = &mut wb.sheet_mut(1).unwrap().pivots[2];
+    pt.rows[0].group_bins = Some((0.0, 10.0));
+    pt.rows[0].grouped_items = vec![vec!["A".to_string(), "B".to_string()]];
+    pt.rows[0].sort_by = Some("Sales".to_string());
+    pt.rows[0].custom_order = vec!["B".to_string(), "A".to_string()];
+    pt.repeat_item_labels = true;
+    pt.blank_lines = true;
+    pt.show_items_with_no_data = true;
+    pt.calculated_items = vec![PivotCalcItem { name: "East+West".into(), field: "Region".into(), formula: "=East+West".into() }];
+    pt.filters[0].value_filter = Some(PivotValueFilter { n: 2, top: true, by_field: Some("Sales".into()), ..PivotValueFilter::default() });
+
+    let bytes = write_xlsx(&wb).unwrap();
+    let (back, _) = read_xlsx(&bytes).unwrap();
+    let got = &back.sheet(1).unwrap().pivots[2];
+    assert_eq!(got.rows[0].group_bins, Some((0.0, 10.0)), "number bins");
+    assert_eq!(got.rows[0].grouped_items, vec![vec!["A".to_string(), "B".to_string()]], "manual text groups");
+    assert_eq!(got.rows[0].sort_by.as_deref(), Some("Sales"), "sort by a value field");
+    assert_eq!(got.rows[0].custom_order, vec!["B".to_string(), "A".to_string()], "custom order");
+    assert!(got.repeat_item_labels, "repeat item labels");
+    assert!(got.blank_lines, "blank lines between groups");
+    assert!(got.show_items_with_no_data, "show items with no data");
+    assert_eq!(got.calculated_items.len(), 1, "calculated items");
+    assert_eq!(got.calculated_items[0].formula, "=East+West");
+    let vf = got.filters.iter().find_map(|f| f.value_filter.as_ref()).expect("the value filter survives");
+    assert_eq!((vf.n, vf.top), (2, true), "Top 2 by Sales");
+    assert_eq!(vf.by_field.as_deref(), Some("Sales"));
+}
+
+#[test]
+fn the_gridcraft_extension_is_well_formed_and_ignored_by_the_reader_when_absent() {
+    // The settings live in an `ext` Excel ignores, so it must be a well-formed element nested
+    // inside the standard extLst, and a file without it must still read.
+    let mut wb = workbook();
+    let pt = &mut wb.sheet_mut(1).unwrap().pivots[2];
+    pt.blank_lines = true;
+    pt.rows[0].group_bins = Some((2.5, 7.0));
+    pt.rows[0].sort_by = Some("Sales & \"more\"".to_string());
+    let parts = unzip(&write_xlsx(&wb).unwrap());
+    let xml = String::from_utf8(parts.get("xl/pivotTables/pivotTable3.xml").cloned().unwrap_or_default()).unwrap();
+    assert!(xml.contains("<extLst>"), "the extension list is written");
+    assert!(xml.contains("<gc:pivotSettings"), "our settings are inside it");
+    assert!(xml.contains("binStart=\"2.5\"") && xml.contains("binSize=\"7\""), "the bin is escaped and written");
+    assert!(xml.contains("Sales &amp; &quot;more&quot;"), "attributes are XML-escaped");
+    // Every `ext` sits in the one extLst, which ends once, right before the closing element.
+    assert_eq!(xml.matches("<extLst>").count(), 1);
+    assert_eq!(xml.matches("</extLst>").count(), 1);
+    assert!(xml.ends_with("</extLst></pivotTableDefinition>"));
+    // A pivot with no such settings writes no extension at all.
+    let plain = unzip(&write_xlsx(&workbook()).unwrap());
+    let plain_xml = String::from_utf8(plain.get("xl/pivotTables/pivotTable3.xml").cloned().unwrap_or_default()).unwrap();
+    assert!(!plain_xml.contains("gc:pivotSettings"));
 }

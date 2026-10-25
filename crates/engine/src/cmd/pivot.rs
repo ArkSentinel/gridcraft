@@ -53,6 +53,15 @@ pub fn specs() -> Vec<CommandSpec> {
             calculated_field
         ),
         cmd!(
+            "pivot.calculatedItem",
+            "Calculated Item",
+            ["PivotTable Analyze", "Calculations"],
+            None,
+            "{pivot?, field, name, formula?: \"=East+West\", delete?: bool} (modelled only: not evaluated or written to XLSX yet)",
+            has_doc,
+            calculated_item
+        ),
+        cmd!(
             "insert.pivotChart",
             "PivotChart",
             ["Insert", "Charts"],
@@ -96,18 +105,36 @@ pub fn specs() -> Vec<CommandSpec> {
             "Value Field Settings",
             ["PivotTable Analyze", "Active Field"],
             None,
-            "{pivot?, field: caption or source field | index: n, func?, name?, showAs?: normal|percentOfGrandTotal|percentOfColumnTotal|percentOfRowTotal|runningTotal|rank, numberFormat?: \"#,##0\" | null, replace?}",
+            "{pivot?, field: caption or source field | index: n, func?, name?, showAs?: normal|percentOfGrandTotal|percentOfColumnTotal|percentOfRowTotal|percentOf|differenceFrom|percentDifferenceFrom|runningTotal|percentRunningTotalIn|rank|rankAscending|index|percentOfParentRowTotal, baseField?, baseItem?, numberFormat?: \"#,##0\" | null, replace?}",
             has_doc,
             value_settings
         ),
         cmd!("pivot.filter", "Filter Items", [], None, "{pivot?, field, selected: [\"East\", ..] | null (all), replace?}", has_doc, filter),
+        cmd!(
+            "pivot.slicer",
+            "Slicer (Pivot)",
+            ["PivotTable Analyze", "Filter"],
+            None,
+            "{pivot?, field, value, multi?: bool} toggles one value on a pivot field (slicer-style)",
+            has_doc,
+            slicer_pivot
+        ),
+        cmd!(
+            "pivot.timeline",
+            "Timeline (Pivot)",
+            ["PivotTable Analyze", "Filter"],
+            None,
+            "{pivot?, field, start?, end?} filters a date field to a range (timeline-style)",
+            has_doc,
+            timeline
+        ),
         cmd!("pivot.sort", "Sort Field", [], None, "{pivot?, field, order: asc|desc|none, replace?}", has_doc, sort),
         cmd!(
             "pivot.group",
             "Group Field",
             ["PivotTable Analyze", "Group"],
             None,
-            "{pivot?, field, by: years|quarters|months|days|none, replace?}",
+            "{pivot?, field, by: years|quarters|months|days|hours|minutes|seconds|numbers|text|none, start?, size?, items?, replace?}",
             has_doc,
             group
         ),
@@ -302,8 +329,15 @@ fn show_as_param(v: &str) -> Option<PivotShowAs> {
         "percentofgrandtotal" => PivotShowAs::PercentOfGrandTotal,
         "percentofcolumntotal" => PivotShowAs::PercentOfColumnTotal,
         "percentofrowtotal" => PivotShowAs::PercentOfRowTotal,
+        "percentof" => PivotShowAs::PercentOf,
+        "differencefrom" => PivotShowAs::DifferenceFrom,
+        "percentdifferencefrom" => PivotShowAs::PercentDifferenceFrom,
         "runningtotal" => PivotShowAs::RunningTotal,
-        "rank" => PivotShowAs::Rank,
+        "percentrunningtotalin" => PivotShowAs::PercentRunningTotalIn,
+        "rank" | "rankdescending" => PivotShowAs::Rank,
+        "rankascending" => PivotShowAs::RankAscending,
+        "index" => PivotShowAs::Index,
+        "percentofparentrowtotal" | "normalized" => PivotShowAs::PercentOfParentRowTotal,
         _ => return None,
     })
 }
@@ -314,8 +348,15 @@ fn show_as_name(v: PivotShowAs) -> &'static str {
         PivotShowAs::PercentOfGrandTotal => "percentOfGrandTotal",
         PivotShowAs::PercentOfColumnTotal => "percentOfColumnTotal",
         PivotShowAs::PercentOfRowTotal => "percentOfRowTotal",
+        PivotShowAs::PercentOf => "percentOf",
+        PivotShowAs::DifferenceFrom => "differenceFrom",
+        PivotShowAs::PercentDifferenceFrom => "percentDifferenceFrom",
         PivotShowAs::RunningTotal => "runningTotal",
+        PivotShowAs::PercentRunningTotalIn => "percentRunningTotalIn",
         PivotShowAs::Rank => "rank",
+        PivotShowAs::RankAscending => "rankAscending",
+        PivotShowAs::Index => "index",
+        PivotShowAs::PercentOfParentRowTotal => "percentOfParentRowTotal",
     }
 }
 
@@ -334,6 +375,9 @@ fn group_name(g: PivotDateGroup) -> &'static str {
         PivotDateGroup::Quarters => "quarters",
         PivotDateGroup::Months => "months",
         PivotDateGroup::Days => "days",
+        PivotDateGroup::Hours => "hours",
+        PivotDateGroup::Minutes => "minutes",
+        PivotDateGroup::Seconds => "seconds",
     }
 }
 
@@ -489,7 +533,17 @@ fn add_to_area(
                 _ => auto_name(f, &field),
             };
             let nm = unique_value_name(pt, &base, None);
-            let v = PivotValue { source_col: field, func: f, name: nm, show_as: PivotShowAs::Normal, number_format: None };
+            let v = PivotValue {
+                source_col: field,
+                func: f,
+                name: nm,
+                show_as: PivotShowAs::Normal,
+                base_field: None,
+                base_item: None,
+                error_display: None,
+                empty_display: None,
+                number_format: None,
+            };
             let at = position.unwrap_or(pt.values.len()).min(pt.values.len());
             pt.values.insert(at, v);
         }
@@ -498,7 +552,7 @@ fn add_to_area(
             let existing = pt.filters.iter().position(|f| f.source_col.eq_ignore_ascii_case(&field));
             let entry = match existing {
                 Some(i) => pt.filters.remove(i),
-                None => PivotFilter { source_col: field, selected: None },
+                None => PivotFilter { source_col: field, selected: None, value_filter: None },
             };
             let at = position.unwrap_or(pt.filters.len()).min(pt.filters.len());
             pt.filters.insert(at, entry);
@@ -647,7 +701,8 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
         }
         _ => next_pivot_name(&s.doc()?.wb),
     };
-    let dest = str_param(p, "destination").or_else(|| str_param(p, "location")).unwrap_or("new").trim().to_string();
+    let dest_raw = str_param(p, "destination").or_else(|| str_param(p, "location")).unwrap_or("new").trim().to_string();
+    let dest = if dest_raw.eq_ignore_ascii_case("existing") { str_param(p, "location").unwrap_or("").trim().to_string() } else { dest_raw };
     // Existing sheet destination: (sheet index, anchor).
     let target: Option<(usize, CellRef)> = if dest.eq_ignore_ascii_case("new") || dest.is_empty() {
         None
@@ -890,7 +945,7 @@ fn pivot_json(wb: &Workbook, si: usize, pt: &PivotTable) -> Json {
         "source": pt.source,
         "rows": pt.rows.iter().map(|f| json!({"field": f.source_col, "sort": sort_name(f.sort), "group": group_name(f.date_group), "collapsed": f.collapsed_items})).collect::<Vec<_>>(),
         "columns": pt.columns.iter().map(|f| json!({"field": f.source_col, "sort": sort_name(f.sort), "group": group_name(f.date_group), "collapsed": f.collapsed_items})).collect::<Vec<_>>(),
-        "values": pt.values.iter().map(|v| json!({"field": v.source_col, "func": func_name(v.func), "name": v.name, "showAs": show_as_name(v.show_as), "numberFormat": v.number_format})).collect::<Vec<_>>(),
+        "values": pt.values.iter().map(|v| json!({"field": v.source_col, "func": func_name(v.func), "name": v.name, "showAs": show_as_name(v.show_as), "baseField": v.base_field, "baseItem": v.base_item, "numberFormat": v.number_format})).collect::<Vec<_>>(),
         "filters": pt.filters.iter().map(|f| json!({"field": f.source_col, "selected": f.selected, "report": !in_axes(pt, &f.source_col)})).collect::<Vec<_>>(),
         "layout": layout_name(pt.layout),
         "grandTotalsRows": pt.grand_totals_rows,
@@ -902,6 +957,39 @@ fn pivot_json(wb: &Workbook, si: usize, pt: &PivotTable) -> Json {
         "valuesOnRows": pt.values_on_rows,
         "valuesPosition": pt.values_position,
         "enableShowDetails": pt.enable_show_details,
+    })
+}
+
+fn calculated_item(s: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "pivot.calculatedItem";
+    let field = str_param(p, "field").ok_or_else(|| bad(C, "missing `field`"))?.to_string();
+    let name = str_param(p, "name").map(str::to_string);
+    let formula = str_param(p, "formula").map(str::to_string);
+    let delete = bool_param(p, "delete").unwrap_or(false);
+    let name = name.ok_or_else(|| bad(C, "missing `name`"))?;
+    update(s, p, |pt, _, _| {
+        if delete {
+            let i = pt
+                .calculated_items
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case(&name) && c.field.eq_ignore_ascii_case(&field))
+                .ok_or_else(|| bad(C, format!("no calculated item `{name}`")))?;
+            pt.calculated_items.remove(i);
+            return Ok(json!({"deleted": name}));
+        }
+        let formula = formula.ok_or_else(|| bad(C, "missing `formula`"))?;
+        if !formula.trim_start().starts_with('=') {
+            return Err(bad(C, "formula must start with `=`"));
+        }
+        if let Some(i) = pt.calculated_items.iter().position(|c| c.name.eq_ignore_ascii_case(&name) && c.field.eq_ignore_ascii_case(&field)) {
+            pt.calculated_items[i].formula = formula.clone();
+        } else {
+            if pt.calculated_items.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
+                return Err(other("PivotTable field name already exists."));
+            }
+            pt.calculated_items.push(PivotCalcItem { name: name.clone(), field: field.clone(), formula: formula.clone() });
+        }
+        Ok(json!({"name": name, "formula": formula}))
     })
 }
 
@@ -1166,6 +1254,10 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
         Some(v) => Some(show_as_param(v).ok_or_else(|| bad(C, format!("unknown showAs `{v}`")))?),
         None => None,
     };
+    let base_field = str_param(p, "baseField").map(str::to_string);
+    let base_item = str_param(p, "baseItem").map(str::to_string);
+    let error_display = str_param(p, "errorDisplay").map(str::to_string);
+    let empty_display = str_param(p, "emptyDisplay").map(str::to_string);
     let name = str_param(p, "name").map(str::to_string);
     let fmt = p.get("numberFormat").cloned();
     update(s, p, |pt, src, _| {
@@ -1209,7 +1301,39 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
             v.name = n.to_string();
         }
         if let Some(sa) = show {
+            // Excel switches the number format when the calculation changes to/from a percent
+            // mode, so a plain "#,##0.0" never renders a ratio.
+            let percent = |x: PivotShowAs| {
+                matches!(
+                    x,
+                    PivotShowAs::PercentOfGrandTotal
+                        | PivotShowAs::PercentOfColumnTotal
+                        | PivotShowAs::PercentOfRowTotal
+                        | PivotShowAs::PercentOf
+                        | PivotShowAs::PercentDifferenceFrom
+                        | PivotShowAs::PercentRunningTotalIn
+                )
+            };
+            if percent(sa) && !v.number_format.as_deref().is_some_and(|f| f.contains('%')) {
+                v.number_format = Some("0.00%".into());
+            }
             v.show_as = sa;
+        }
+        if let Some(bf) = base_field {
+            v.base_field = Some(bf);
+        }
+        if let Some(bi) = base_item {
+            v.base_item = Some(bi);
+        }
+        match &error_display {
+            Some(s) if s.is_empty() => v.error_display = None,
+            Some(s) => v.error_display = Some(s.clone()),
+            None => {}
+        }
+        match &empty_display {
+            Some(s) if s.is_empty() => v.empty_display = None,
+            Some(s) => v.empty_display = Some(s.clone()),
+            None => {}
         }
         match &fmt {
             Some(Json::String(f)) if !f.is_empty() && f.len() <= 255 => v.number_format = Some(f.clone()),
@@ -1223,6 +1347,70 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
             *slot = v;
         }
         Ok(json!({"name": name}))
+    })
+}
+
+fn slicer_pivot(s: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "pivot.slicer";
+    let field = str_param(p, "field").ok_or_else(|| bad(C, "missing `field`"))?.to_string();
+    let value = str_param(p, "value").ok_or_else(|| bad(C, "missing `value`"))?.to_string();
+    let multi = bool_param(p, "multi").unwrap_or(false);
+    // Build selected list.
+    let current: Option<Vec<String>> = s.doc().ok().and_then(|d| {
+        let pt = d.wb.active()?.pivots.last()?;
+        pt.filters.iter().find(|f| f.source_col.eq_ignore_ascii_case(&field)).and_then(|f| f.selected.clone())
+    });
+    let new_selected = if multi {
+        let mut set = current.unwrap_or_default();
+        if let Some(pos) = set.iter().position(|x| x.eq_ignore_ascii_case(&value)) {
+            set.remove(pos);
+        } else {
+            set.push(value.clone());
+        }
+        if set.is_empty() { None } else { Some(set) }
+    } else {
+        match &current {
+            Some(sel) if sel.len() == 1 && sel.iter().any(|x| x.eq_ignore_ascii_case(&value)) => None,
+            _ => Some(vec![value.clone()]),
+        }
+    };
+    let mut q = json!({"field": field});
+    if let Some(sel) = new_selected {
+        q["selected"] = json!(sel);
+    } else {
+        q["selected"] = Json::Null;
+    }
+    filter(s, &q)
+}
+
+fn timeline(s: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "pivot.timeline";
+    let field = str_param(p, "field").ok_or_else(|| bad(C, "missing `field`"))?.to_string();
+    let start = str_param(p, "start").map(str::to_string);
+    let end = str_param(p, "end").map(str::to_string);
+    update(s, p, |pt, src, wb| {
+        let field = canonical(C, src, &field)?;
+        let labels = pv::timeline_labels(wb, pt, src, &field, start.as_deref(), end.as_deref());
+        let i = pt.filters.iter().position(|f| f.source_col.eq_ignore_ascii_case(&field));
+        if labels.is_empty() {
+            if let Some(idx) = i {
+                if !in_axes(pt, &field) {
+                    pt.filters.remove(idx);
+                } else if let Some(f) = pt.filters.get_mut(idx) {
+                    f.selected = None;
+                }
+            }
+        } else {
+            match i {
+                Some(idx) => {
+                    if let Some(f) = pt.filters.get_mut(idx) {
+                        f.selected = Some(labels);
+                    }
+                }
+                None => pt.filters.push(PivotFilter { source_col: field.clone(), selected: Some(labels), value_filter: None }),
+            }
+        }
+        Ok(json!({"field": field}))
     })
 }
 
@@ -1251,24 +1439,77 @@ fn filter(s: &mut Session, p: &Json) -> Result<Json> {
         Some(Json::String(s)) => Some(vec![s.clone()]),
         Some(_) => return Err(bad(C, "`selected` is a list of item labels or null")),
     };
+
+    // Value-based filter params.
+    let top_n = u32_param(p, "topN").or_else(|| u32_param(p, "top"));
+    let bottom_n = u32_param(p, "bottomN").or_else(|| u32_param(p, "bottom"));
+    let above = f64_param(p, "above");
+    let below = f64_param(p, "below");
+    let between_lo = f64_param(p, "betweenLo").or_else(|| f64_param(p, "betweenLow"));
+    let between_hi = f64_param(p, "betweenHi").or_else(|| f64_param(p, "betweenHigh"));
+    let top_percent = f64_param(p, "topPercent");
+    let by_field = str_param(p, "byField").map(str::to_string);
+    let has_value_filter = top_n.is_some()
+        || bottom_n.is_some()
+        || above.is_some()
+        || below.is_some()
+        || (between_lo.is_some() && between_hi.is_some())
+        || top_percent.is_some();
+    let vf = if has_value_filter {
+        Some(PivotValueFilter {
+            n: top_n.or(bottom_n).unwrap_or(0),
+            top: top_n.is_some() || top_percent.is_some(),
+            bottom: bottom_n.is_some(),
+            above,
+            below,
+            between_lo,
+            between_hi,
+            top_percent: top_percent.is_some(),
+            by_field: by_field.clone(),
+        })
+    } else {
+        None
+    };
+    // top percent stored in n as percent*100? store separately not; use n as percent value
+    let vf = vf.map(|mut v| {
+        if v.top_percent {
+            v.n = top_percent.unwrap_or(0.0) as u32;
+        }
+        v
+    });
     update(s, p, |pt, src, _| {
         let field = canonical(C, src, &field)?;
         let i = pt.filters.iter().position(|f| f.source_col.eq_ignore_ascii_case(&field));
         match (i, selected) {
             (Some(i), None) => {
-                if in_axes(pt, &field) {
+                if in_axes(pt, &field) && vf.is_none() {
                     pt.filters.remove(i);
                 } else if let Some(f) = pt.filters.get_mut(i) {
                     f.selected = None;
+                    f.value_filter = vf.clone();
                 }
             }
             (Some(i), Some(sel)) => {
                 if let Some(f) = pt.filters.get_mut(i) {
                     f.selected = Some(sel);
+                    if vf.is_some() {
+                        f.value_filter = vf.clone();
+                    }
                 }
             }
-            (None, Some(sel)) => pt.filters.push(PivotFilter { source_col: field.clone(), selected: Some(sel) }),
-            (None, None) => {}
+            (None, Some(sel)) => pt.filters.push(PivotFilter { source_col: field.clone(), selected: Some(sel), value_filter: vf.clone() }),
+            (None, None) => {
+                if vf.is_some() {
+                    pt.filters.push(PivotFilter { source_col: field.clone(), selected: None, value_filter: vf.clone() });
+                }
+            }
+        }
+        // Apply value_filter to an existing filter without selected
+        if vf.is_some()
+            && let Some(idx) = i
+            && let Some(f) = pt.filters.get_mut(idx)
+        {
+            f.value_filter = vf.clone();
         }
         Ok(json!({"field": field}))
     })
@@ -1291,8 +1532,18 @@ fn sort(s: &mut Session, p: &Json) -> Result<Json> {
         "none" | "manual" | "source" => PivotSort::None,
         o => return Err(bad(C, format!("unknown order `{o}` (asc|desc|none)"))),
     };
+    let by_field = str_param(p, "byField").map(str::to_string);
+    let custom_order: Option<Vec<String>> =
+        p.get("customOrder").and_then(Json::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
     update(s, p, |pt, _, _| {
-        axis_field(C, pt, &field)?.sort = order;
+        let f = axis_field(C, pt, &field)?;
+        f.sort = order;
+        if let Some(bf) = by_field {
+            f.sort_by = Some(bf);
+        }
+        if let Some(co) = custom_order {
+            f.custom_order = co;
+        }
         Ok(json!({}))
     })
 }
@@ -1303,6 +1554,9 @@ fn group_param(v: Option<&str>) -> Option<PivotDateGroup> {
         "quarters" | "quarter" => PivotDateGroup::Quarters,
         "months" | "month" => PivotDateGroup::Months,
         "days" | "day" => PivotDateGroup::Days,
+        "hours" | "hour" => PivotDateGroup::Hours,
+        "minutes" | "minute" => PivotDateGroup::Minutes,
+        "seconds" | "second" => PivotDateGroup::Seconds,
         "none" | "ungroup" => PivotDateGroup::None,
         _ => return None,
     })
@@ -1311,18 +1565,58 @@ fn group_param(v: Option<&str>) -> Option<PivotDateGroup> {
 fn group(s: &mut Session, p: &Json) -> Result<Json> {
     const C: &str = "pivot.group";
     let field = str_param(p, "field").ok_or_else(|| bad(C, "missing `field`"))?.to_string();
-    let raw = str_param(p, "by").unwrap_or("months");
-    let by = group_param(Some(raw)).ok_or_else(|| bad(C, format!("unknown grouping `{raw}` (years|quarters|months|days|none)")))?;
+    let raw = str_param(p, "by").unwrap_or("months").to_ascii_lowercase();
     update(s, p, |pt, src, _| {
-        if by != PivotDateGroup::None {
+        let f = axis_field(C, pt, &field)?;
+        f.collapsed_items.clear();
+        if raw == "numbers" {
             let c = src.col(&field).ok_or_else(|| bad(C, format!("no field `{field}` in the source data")))?;
             if !src.numeric.get(c).copied().unwrap_or(false) {
                 return Err(other("Cannot group that selection."));
             }
+            let start = f64_param(p, "start").unwrap_or(0.0);
+            let size = f64_param(p, "size").unwrap_or(1.0);
+            if size <= 0.0 || !size.is_finite() {
+                return Err(bad(C, "group size must be a positive number"));
+            }
+            f.date_group = PivotDateGroup::None;
+            f.group_bins = Some((start, size));
+            f.grouped_items.clear();
+        } else if raw == "text" {
+            f.date_group = PivotDateGroup::None;
+            f.group_bins = None;
+            // items: array of arrays of labels
+            if let Some(arr) = p.get("items").and_then(Json::as_array) {
+                let mut groups = Vec::new();
+                for g in arr {
+                    if let Some(obj) = g.as_object() {
+                        let name = obj.get("name").and_then(Json::as_str).map(str::to_string);
+                        if let Some(labels) = obj.get("items").and_then(Json::as_array) {
+                            let mut grp: Vec<String> = labels.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+                            if let Some(n) = name {
+                                grp.insert(0, n);
+                            }
+                            groups.push(grp);
+                        }
+                    } else if let Some(labels) = g.as_array() {
+                        groups.push(labels.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+                    }
+                }
+                f.grouped_items = groups;
+            }
+        } else {
+            let by = group_param(Some(&raw))
+                .ok_or_else(|| bad(C, format!("unknown grouping `{raw}` (years|quarters|months|days|hours|minutes|seconds|numbers|text|none)")))?;
+            if by != PivotDateGroup::None {
+                let c = src.col(&field).ok_or_else(|| bad(C, format!("no field `{field}` in the source data")))?;
+                if !src.numeric.get(c).copied().unwrap_or(false) {
+                    return Err(other("Cannot group that selection."));
+                }
+            }
+            f.date_group = by;
+            f.group_bins = None;
+            f.grouped_items.clear();
         }
-        let f = axis_field(C, pt, &field)?;
-        f.date_group = by;
-        f.collapsed_items.clear();
         Ok(json!({}))
     })
 }
@@ -1387,6 +1681,9 @@ fn layout(s: &mut Session, p: &Json) -> Result<Json> {
     let gr = bool_param(p, "grandTotalsRows");
     let gc = bool_param(p, "grandTotalsCols");
     let hd = bool_param(p, "showHeaders");
+    let rl = bool_param(p, "repeatItemLabels");
+    let bl = bool_param(p, "blankLines");
+    let snd = bool_param(p, "showItemsWithNoData");
     update(s, p, |pt, _, _| {
         if let Some(l) = lay {
             pt.layout = l;
@@ -1411,6 +1708,15 @@ fn layout(s: &mut Session, p: &Json) -> Result<Json> {
         }
         if let Some(v) = hd {
             pt.show_headers = v;
+        }
+        if let Some(v) = rl {
+            pt.repeat_item_labels = v;
+        }
+        if let Some(v) = bl {
+            pt.blank_lines = v;
+        }
+        if let Some(v) = snd {
+            pt.show_items_with_no_data = v;
         }
         Ok(json!({"layout": layout_name(pt.layout)}))
     })
@@ -1864,6 +2170,41 @@ mod tests {
         assert_eq!(text(&s, "A5"), "Grand Total");
         assert_eq!(val(&s, "B5"), Value::Number(420.0));
         assert!(s.execute("pivot.filter", json!({"field": "Product", "selected": []})).is_err());
+    }
+
+    #[test]
+    fn number_format_and_show_as_are_independent() {
+        // #: the dialog used to send a hardcoded number format with every OK, so picking
+        // "% of Grand Total" printed 12323.00% and the decimals spinner did nothing.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"]})).unwrap();
+        let shown = |s: &Session, a: &str| {
+            let d = s.doc().unwrap();
+            let sh = d.wb.active().unwrap();
+            let c = CellRef::parse(a).unwrap();
+            crate::display::format(&sh.value(c), d.wb.styles.get(sh.style_id(c)).num_fmt.as_str(), &d.wb).text
+        };
+        // Percent with no explicit format: the engine's automatic 0.00% applies.
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "percentOfGrandTotal"})).unwrap();
+        assert_eq!(shown(&s, "B4"), "49.70%");
+        assert_eq!(shown(&s, "B7"), "100.00%");
+        // Decimals on a plain sum.
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "normal", "numberFormat": "#,##0.000"})).unwrap();
+        assert_eq!(shown(&s, "B4"), "415.000");
+        // Back to percent: a percent mode always shows a percent, so a leftover non-percent
+        // format cannot turn 0.497 into 41500% or print it as a plain number.
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "percentOfGrandTotal"})).unwrap();
+        assert_eq!(shown(&s, "B4"), "49.70%");
+        // An explicit percent format is kept, decimals included (the dialog's spinner).
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "numberFormat": "0.0%"})).unwrap();
+        assert_eq!(shown(&s, "B4"), "49.7%");
+        // Switching to a percent mode makes a plain number format a percent one, as Excel does.
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "normal", "numberFormat": "#,##0.0"})).unwrap();
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "percentOfGrandTotal"})).unwrap();
+        assert_eq!(shown(&s, "B4"), "49.70%");
+        // Clearing the format restores the automatic one.
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "numberFormat": null})).unwrap();
+        assert_eq!(shown(&s, "B4"), "49.70%");
     }
 
     #[test]
@@ -2377,6 +2718,10 @@ mod tests {
             "pivot.delete",
             "pivot.showDetails",
             "pivot.options",
+            "pivot.slicer",
+            "pivot.timeline",
+            "pivot.calculatedItem",
+            "pivot.calculatedField",
         ];
         let hostile = [
             json!({}),
