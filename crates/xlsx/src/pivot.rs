@@ -1196,9 +1196,6 @@ fn pt_settings_xml(pt: &PivotTable) -> String {
     for f in pt.filters.iter().filter(|f| f.selected.is_some()) {
         let Some(sel) = f.selected.as_ref() else { continue };
         let _ = write!(body, "<gc:selection field=\"{}\"", esc_attr(&f.source_col));
-        if sel.is_empty() {
-            body.push_str(" empty=\"1\"");
-        }
         body.push('>');
         for label in sel {
             let _ = write!(body, "<gc:item v=\"{}\"/>", esc_attr(label));
