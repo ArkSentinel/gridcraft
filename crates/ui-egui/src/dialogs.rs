@@ -280,6 +280,9 @@ impl Dialog {
                     }
                     if let Some(n) = v.get("name").and_then(Json::as_str) {
                         d.values.insert("name".into(), json!(n));
+                        // The caption the engine chose. Untouched, it must not be sent back: that
+                        // would undo the automatic rename when the function changes.
+                        d.values.insert("origName".into(), json!(n));
                     }
                 }
                 d
@@ -2762,16 +2765,14 @@ fn pivot_field_settings(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, c
         if num_touched {
             params["numberFormat"] = if num_cat == "General" { Json::Null } else { json!(number_format) };
         }
-        if let Some(bf) = &base_field {
-            params["baseField"] = json!(bf);
-        }
-        if let Some(bi) = &base_item {
-            params["baseItem"] = json!(bi);
-        }
+        // "(none)" clears the base; an untouched one is simply not sent.
+        params["baseField"] = base_field.as_ref().map_or(Json::Null, |bf| json!(bf));
+        params["baseItem"] = base_item.as_ref().map_or(Json::Null, |bi| json!(bi));
         if !pivot.is_empty() {
             params["pivot"] = json!(pivot);
         }
-        if !name.trim().is_empty() {
+        let orig = d.values.get("origName").and_then(Json::as_str).unwrap_or("");
+        if !name.trim().is_empty() && !name.trim().eq_ignore_ascii_case(orig) {
             params["name"] = json!(name);
         }
         app.run_or_alert("pivot.valueSettings", params);
@@ -2868,7 +2869,13 @@ fn number_controls(code: &str) -> (&'static str, u64, bool) {
 fn show_as_is_percent(mode: &str) -> bool {
     matches!(
         mode,
-        "percentOfGrandTotal" | "percentOfColumnTotal" | "percentOfRowTotal" | "percentOf" | "percentDifferenceFrom" | "percentRunningTotalIn"
+        "percentOfGrandTotal"
+            | "percentOfColumnTotal"
+            | "percentOfRowTotal"
+            | "percentOf"
+            | "percentDifferenceFrom"
+            | "percentRunningTotalIn"
+            | "percentOfParentRowTotal"
     )
 }
 

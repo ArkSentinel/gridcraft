@@ -166,3 +166,44 @@ fn percent_difference_from_reads_the_base_item_of_its_own_nesting_level() {
     let plums_at = rows.iter().position(|(l, _)| l == "Plums").map(|i| rows[i].1).unwrap_or(f64::NAN);
     assert!((plums_at - (60.0 - 120.0)).abs() < 1e-9, "Plums measured against Pears in its own group, got {plums_at}");
 }
+
+#[test]
+fn difference_from_can_name_another_row_field_as_the_base() {
+    // The dialog offers the report's fields, as Excel does. The engine used to look the name up
+    // among the *value* fields, so "Region" (a row field) was ignored and the innermost row field
+    // was used instead — every difference came out as "this product minus the previous product".
+    let mut s = sales();
+    s.execute("insert.pivotTable", json!({"rows": ["Region", "Product"], "values": ["Sales"], "destination": "Sheet1!G3"})).unwrap();
+    s.execute("pivot.valueSettings", json!({"index": 0, "showAs": "differenceFrom", "baseField": "Region", "baseItem": "West"})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let r = sh.pivots[0].last_range.unwrap();
+    let cells: Vec<(String, f64)> = (r.start.row..=r.end.row)
+        .map(|x| (sh.value(CellRef::new(x, r.start.col)).display(), sh.value(CellRef::new(x, r.start.col + 1)).as_f64().unwrap_or(f64::NAN)))
+        .collect();
+    let at = |name: &str, nth: usize| -> f64 {
+        cells.iter().enumerate().filter(|(_, (l, _))| l == name).nth(nth).map(|(_, (_, v))| *v).unwrap_or(f64::NAN)
+    };
+    // Same product, measured against West's: East Apples 160 - West Apples 50 = 110.
+    assert!((at("Apples", 0) - (160.0 - 50.0)).abs() < 1e-9, "East Apples against West Apples, got {}", at("Apples", 0));
+    // Pears: East 120 - West 45 = 75; Plums: East 60 - West 70 = -10.
+    assert!((at("Pears", 0) - (120.0 - 45.0)).abs() < 1e-9, "got {}", at("Pears", 0));
+    assert!((at("Plums", 0) - (60.0 - 70.0)).abs() < 1e-9, "got {}", at("Plums", 0));
+    // Region itself: East 340 - West 165 = 175, and West's own group has nothing to compare to.
+    assert!((at("East", 0) - (340.0 - 165.0)).abs() < 1e-9, "got {}", at("East", 0));
+    assert!(at("West", 0).is_nan(), "the base group has no difference from itself, got {}", at("West", 0));
+}
+
+#[test]
+fn percent_of_field_divides_by_that_fields_subtotal() {
+    let mut s = sales();
+    s.execute("insert.pivotTable", json!({"rows": ["Region", "Product"], "values": ["Sales"], "destination": "Sheet1!G3"})).unwrap();
+    s.execute("pivot.valueSettings", json!({"index": 0, "showAs": "percentOf", "baseField": "Region"})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let r = sh.pivots[0].last_range.unwrap();
+    // Rows are the header, then East, East's products, ... The base field is Region, whose outermost
+    // level has no parent, so the share is of the grand total: 160 / 625 for East's Apples.
+    let east_apples = sh.value(CellRef::new(r.start.row + 2, r.start.col + 1)).as_f64().unwrap_or(f64::NAN);
+    assert!((east_apples - 160.0 / 625.0).abs() < 1e-9, "the share of Region's top level, got {east_apples}");
+}

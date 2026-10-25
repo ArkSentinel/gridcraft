@@ -1565,31 +1565,30 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             (v, _) => v,
         }
     };
-    // The value Difference From / % Difference From subtracts: the chosen base item's aggregate in
-    // the base field (the previous sibling by default). `None` means "no base", which Excel shows
-    // as an empty cell — the base item itself and the first sibling have nothing to compare to.
-    let base_difference = |vi: usize, rp: &[u32], cp: &[u32], vdef: &PivotValue| -> Option<Value> {
-        let depth = rp.len().checked_sub(1)?;
+    // The base an item is measured against, for Difference From / % Difference From and
+    // % Of (field). `base_field` names a row/column field, as in Excel; without one the previous
+    // item of the row field the cell sits in is the base. `None` means "no base", which Excel
+    // shows as an empty cell — the base item itself and the first item have nothing to compare to.
+    let base_path = |rp: &[u32], vdef: &PivotValue| -> Option<Vec<u32>> {
+        // The depth of the named base field, or of the innermost row field by default.
+        let depth = match vdef.base_field.as_deref() {
+            Some(bf) => row_fields.iter().position(|f| f.source_col.eq_ignore_ascii_case(bf))?,
+            None => rp.len().checked_sub(1)?,
+        };
         let sibs = siblings.get(&rp[..depth]).cloned().unwrap_or_else(|| level0.clone());
         let cur = *rp.get(depth)?;
         let pos = sibs.iter().position(|x| *x == cur)?;
-        // The base item is a label of the row field this path is at, not of the outermost one.
+        // The base item is a label of that field, not of the outermost one.
         let chosen = match &vdef.base_item {
             Some(bi) => *sibs.iter().find(|it| ctx.row_items.get(depth).is_some_and(|fi| fi.label(**it).eq_ignore_ascii_case(bi)))?,
             None => *sibs.get(pos.checked_sub(1)?)?,
         };
-        let base_vi = vdef
-            .base_field
-            .as_deref()
-            .and_then(|bf| vals.iter().position(|(_, v)| v.name.eq_ignore_ascii_case(bf) || v.source_col.eq_ignore_ascii_case(bf)))
-            .unwrap_or(vi);
-        let mut base_path = rp.to_vec();
-        *base_path.get_mut(depth)? = chosen;
-        if base_path.as_slice() == rp {
-            return None;
-        }
-        get(&base_path, cp, base_vi)
+        let mut p = rp.to_vec();
+        *p.get_mut(depth)? = chosen;
+        if p == rp { None } else { Some(p) }
     };
+    let base_difference =
+        |vi: usize, rp: &[u32], cp: &[u32], vdef: &PivotValue| -> Option<Value> { base_path(rp, vdef).and_then(|p| get(&p, cp, vi)) };
     let data_fmt: Vec<Option<String>> = vals
         .iter()
         .map(|(vs, v)| match v.show_as {
@@ -1699,12 +1698,17 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                 PivotShowAs::PercentOfColumnTotal => ratio(raw, get(&[], cp, *vi)),
                 PivotShowAs::PercentOfRowTotal => ratio(raw, get(rp, &[], *vi)),
                 PivotShowAs::PercentOf => {
-                    let base_vi = vdef
+                    // The base field is an axis field: the share is of that field's subtotal, which
+                    // is the grand total for its outermost level.
+                    let parent = vdef
                         .base_field
                         .as_deref()
-                        .and_then(|bf| vals.iter().position(|(_, v)| v.name.eq_ignore_ascii_case(bf) || v.source_col.eq_ignore_ascii_case(bf)))
-                        .unwrap_or(*vi);
-                    ratio(raw, get(&[], &[], base_vi))
+                        .and_then(|bf| row_fields.iter().position(|f| f.source_col.eq_ignore_ascii_case(bf)))
+                        .map(|d| rp[..d.min(rp.len())].to_vec());
+                    match parent {
+                        Some(p) if p.as_slice() != rp => ratio(raw, get(&p, cp, *vi)),
+                        _ => ratio(raw, get(&[], &[], *vi)),
+                    }
                 }
                 PivotShowAs::DifferenceFrom => match (raw.clone(), base_difference(*vi, rp, cp, vdef)) {
                     (Value::Number(x), Some(Value::Number(y))) => Value::number(x - y),

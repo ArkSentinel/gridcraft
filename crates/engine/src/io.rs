@@ -662,11 +662,14 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         EngineError::Other(format!("{path}: {e}"))
     })?;
     // The mode above is filtered by the umask, so a group-writable destination under a restrictive
-    // umask (0664 saved with umask 022) would lose its group write. Set the saved permissions
-    // explicitly on the finished temporary, before it replaces the destination.
+    // umask (0664 saved with umask 022) would lose its group write, and under umask 077 a fresh
+    // file would come out 0600 (or 0000 with umask 0777). Set the permissions explicitly on the
+    // finished temporary, before it replaces the destination.
     #[cfg(unix)]
-    if let Some(p) = &prior {
-        f.set_permissions(p.clone()).map_err(|e| {
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = prior.as_ref().map_or(0o600, std::fs::Permissions::mode);
+        f.set_permissions(std::fs::Permissions::from_mode(mode)).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             EngineError::Other(format!("{path}: {e}"))
         })?;
@@ -816,11 +819,13 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, prior, "a save keeps mode {prior:o} (got {mode:o})");
         }
-        // And a brand-new file is created with the restrictive, not permissive, default.
+        // And a brand-new file is created with the restrictive default, exactly: the mode given to
+        // `open` is filtered by the umask, so under umask 077 it would otherwise be narrower (and
+        // under 0777 unusable) rather than the documented 0600.
         let fresh = dir.join("new.xlsx");
         write_file(fresh.to_str().unwrap(), b"v").unwrap();
         let mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
-        assert!(mode & 0o022 == 0, "mode {mode:o}");
+        assert_eq!(mode, 0o600, "a new file is owner-only, got {mode:o}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

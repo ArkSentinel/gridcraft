@@ -1339,11 +1339,25 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
             }
             v.show_as = sa;
         }
-        if let Some(bf) = base_field {
-            v.base_field = Some(bf);
+        // A clear means "no base" — the dialog sends `null` when "(none)" is picked, and an empty
+        // string is not a field name.
+        match p.get("baseField") {
+            Some(Json::Null) => v.base_field = None,
+            Some(Json::String(s)) if s.trim().is_empty() => v.base_field = None,
+            _ => {
+                if let Some(bf) = base_field {
+                    v.base_field = Some(bf);
+                }
+            }
         }
-        if let Some(bi) = base_item {
-            v.base_item = Some(bi);
+        match p.get("baseItem") {
+            Some(Json::Null) => v.base_item = None,
+            Some(Json::String(s)) if s.trim().is_empty() => v.base_item = None,
+            _ => {
+                if let Some(bi) = base_item {
+                    v.base_item = Some(bi);
+                }
+            }
         }
         match &error_display {
             Some(s) if s.is_empty() => v.error_display = None,
@@ -2361,6 +2375,23 @@ mod tests {
         s.execute("pivot.group", json!({"field": "Region", "by": "text", "items": [{"name": "Fruit"}]})).unwrap();
         // A real group still works.
         s.execute("pivot.group", json!({"field": "Region", "by": "text", "items": [["Coastal", "East", "West"]]})).unwrap();
+    }
+
+    #[test]
+    fn a_value_fields_base_can_be_cleared() {
+        // Only Some(..) was assigned, so a stored base stayed forever: after the item disappeared
+        // from the report, every Difference From cell stayed empty with no way back.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "Sheet1!G3"})).unwrap();
+        s.execute("pivot.valueSettings", json!({"index": 0, "showAs": "differenceFrom", "baseField": "Sales", "baseItem": "East"})).unwrap();
+        assert_eq!(pt(&s).values[0].base_item.as_deref(), Some("East"));
+        // Explicit null clears.
+        s.execute("pivot.valueSettings", json!({"index": 0, "baseItem": null})).unwrap();
+        assert_eq!(pt(&s).values[0].base_item, None, "null clears the base item");
+        assert_eq!(pt(&s).values[0].base_field.as_deref(), Some("Sales"), "the other half stays");
+        // An empty string clears too, so a form control can send it.
+        s.execute("pivot.valueSettings", json!({"index": 0, "baseField": "  "})).unwrap();
+        assert_eq!(pt(&s).values[0].base_field, None, "a blank clears the base field");
     }
 
     #[test]

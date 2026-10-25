@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-25 · **Change:** minor (§8: PivotTable close-out pass) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-25 · **Change:** minor (§8: PivotTable base field means a row/column field, as in Excel) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -196,6 +196,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | §8: `baseField` names a row/column field, as in Excel, so Difference From and % Of can compare against another axis level; a cleared base is stored as cleared |
 | 2026-10-24 | minor | §8: PivotTable Enable show details: `pivot.options` `enableShowDetails` turns Show Details off for a PivotTable, read and written in XLSX as `enableDrill` |
 | 2026-10-23 | minor | §8: PivotTable Show Details: double-clicking a value cell lists its source records on a new sheet (#2364) |
 | 2026-10-25 | minor | §8: PivotTable close-out pass: sort_by applied in build_tree, repeat_item_labels in tabular flatten, show_items_with_no_data (single-axis), pivot.timeline command, shared-cache XLSX reuse; field-list DnD 1:1 verified by kittest. The XLSX round trip now keeps bins, text groups, sort-by, custom order, blank lines, calculated items and value filters (own `gc:pivotSettings` ext; Excel ignores it but drops it on save); `percentOfParentRowTotal` renamed from the non-OOXML `normalized` |

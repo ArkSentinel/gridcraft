@@ -266,3 +266,60 @@ fn the_create_pivot_dialog_will_not_send_an_empty_existing_location() {
     h.run_steps(3);
     assert_eq!(ok(&mut h), Some(true), "OK is available once a location is typed");
 }
+
+#[test]
+fn choosing_a_new_summary_renames_the_automatic_caption() {
+    // OK used to send the caption the dialog opened on ("Sum of Sales"), undoing the engine's
+    // automatic rename: the header said Sum while the cells held counts.
+    let mut h = harness();
+    h.state_mut().open_dialog("pivotFieldSettings", json!({"field": "Sales", "area": "values"}));
+    h.run_steps(3);
+    h.get_by_label("Count").click();
+    h.run_steps(2);
+    for node in h.get_all_by_label_contains("OK") {
+        node.click();
+    }
+    h.run_steps(3);
+    let info = h.state_mut().session.run("pivot.fields", json!({})).unwrap();
+    let v = &info["values"][0];
+    assert_eq!(v["func"], "count");
+    assert_eq!(v["name"], "Count of Sales", "the caption follows the function");
+}
+
+#[test]
+fn a_hand_typed_caption_still_wins() {
+    let mut h = harness();
+    h.state_mut().open_dialog("pivotFieldSettings", json!({"field": "Sales", "area": "values"}));
+    h.run_steps(3);
+    {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        d.values.insert("func".into(), json!("count"));
+        d.values.insert("name".into(), json!("How many sales"));
+    }
+    h.run_steps(2);
+    for node in h.get_all_by_label_contains("OK") {
+        node.click();
+    }
+    h.run_steps(3);
+    let info = h.state_mut().session.run("pivot.fields", json!({})).unwrap();
+    assert_eq!(info["values"][0]["name"], "How many sales");
+}
+
+#[test]
+fn picking_percent_of_parent_row_total_switches_to_percentage() {
+    // It divides value by parent, so the dialog must treat it as a percent mode. Otherwise the
+    // Number Format block stays on Number and a decimals change sends "#,##0.00", which the engine
+    // overrides with 0.00% — so the decimals setting does nothing.
+    let mut h = harness();
+    h.state_mut().open_dialog("pivotFieldSettings", json!({"field": "Sales", "area": "values"}));
+    h.run_steps(3);
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["numCat"], "Number", "a plain sum opens on Number");
+    h.get_by_label("Show Values As").click();
+    h.run_steps(2);
+    {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        d.values.insert("showAs".into(), json!("percentOfParentRowTotal"));
+    }
+    h.run_steps(3);
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["numCat"], "Percentage", "choosing the mode switches the format block to percentage");
+}
