@@ -1,15 +1,16 @@
 # GridCraft — egui 0.37 migration plan
 
-Status (2026-10-24): the local migration incorporates frozen main
-`3099df934eda27cd457a9b8d1525d3fc973a1b7b`. Canonical pins are egui
+Status (2026-10-25): the local migration incorporates main
+`52fa4406c1ebff8b260a2922472f03aba198b9cf`. Canonical pins are egui
 `6d518fc799681571963842f95b55a6b68431b15a`, winit
 `a517b3846ee8457d84ee4975110bfda6797c44dc`, craft-ui/craft-print
 `25da1314d443171b4adeaad2cd9454b273f35c6f` and craft-fonts
 `b076417b5880bd4154bd22f00695b1d28c6bea83`. The regenerated lock SHA256 is
 `426a766291a8246573bf57e3ab3f5f17ff812487582254a32ff5a2ec0db39f27` and passed the dependency-source audit.
-`egui037-gridcraft-final-ci-20261024-2038` passed all ten stages: i18n-report,
+`egui037-grid-final-main-ci-20261025-0854` passed all ten stages: i18n-report,
 fmt, strict workspace all-target clippy, workspace tests, doctest, assets, layers,
-WASM, parity and keytips. Actual totals are 2,351 passed, none failed and one ignored.
+WASM, parity and keytips. Actual totals are 2,463 passed, none failed and one ignored across 35 summaries.
+Independent review verified the merged main behavior and the final scroll/accessibility fixes.
 The local merge preserves both migration history and the reviewed upstream changes;
 final code and dependency bytes match the passing CI. Subsequent status edits are prose only.
 Native/platform/performance and application E21b qualification remain open; canonical
@@ -17,7 +18,7 @@ pins and full CI do not imply that every native contract is qualified.
 Human review and explicit publication approval are required. Earlier compiler logs,
 source anchors, baseline inventories and proposed steps below are historical records;
 this status governs current pins and acceptance. Final commit/source/CI bindings are in
-`final-landing/local-review-commits-2213/gridcraft` in the migration task evidence.
+`final-landing/grid-publication0865` in the migration task evidence.
 
 Scope: `storytold/gridcraft` only. The shared `storytold/craft-libs`, egui fork and winit fork are
 dependencies of this plan, not files this plan changes. Application document models, commands, undo
