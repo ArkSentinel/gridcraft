@@ -605,6 +605,12 @@ const LINUX_CJK_DIRS: [&str; 22] = [
     "/usr/share/fonts/chromeos/notocjk",
 ];
 
+/// The Windows fonts folder (`%WINDIR%\Fonts`, or the default install location).
+#[cfg(not(target_arch = "wasm32"))]
+fn windows_fonts() -> String {
+    std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into())
+}
+
 /// Japanese Han + Kana faces (Japanese kanji glyph shapes).
 ///
 /// The region-merged `NotoSansCJK-Regular.ttc` holds one face per locale (JP 0, KR 1, SC 2, TC 3,
@@ -613,7 +619,7 @@ const LINUX_CJK_DIRS: [&str; 22] = [
 #[cfg(not(target_arch = "wasm32"))]
 fn cjk_han_japanese() -> Vec<(String, u32)> {
     let mac = "/System/Library/Fonts";
-    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let win = windows_fonts();
     let mut v: Vec<(String, u32)> = Vec::new();
     v.push((format!("{win}\\YuGothR.ttc"), 0)); // Yu Gothic
     v.push((format!("{win}\\msgothic.ttc"), 0)); // MS Gothic
@@ -630,7 +636,7 @@ fn cjk_han_japanese() -> Vec<(String, u32)> {
 #[cfg(not(target_arch = "wasm32"))]
 fn cjk_han_simplified() -> Vec<(String, u32)> {
     let mac = "/System/Library/Fonts";
-    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let win = windows_fonts();
     let mut v: Vec<(String, u32)> = vec![
         (format!("{win}\\msyh.ttc"), 0),            // Microsoft YaHei
         (format!("{win}\\simsun.ttc"), 0),          // SimSun
@@ -655,7 +661,7 @@ fn cjk_han_simplified() -> Vec<(String, u32)> {
 #[cfg(not(target_arch = "wasm32"))]
 fn cjk_hangul() -> Vec<(String, u32)> {
     let mac = "/System/Library/Fonts";
-    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let win = windows_fonts();
     let mut v: Vec<(String, u32)> = Vec::new();
     v.push((format!("{win}\\malgun.ttf"), 0)); // Malgun Gothic
     v.push((format!("{mac}/AppleSDGothicNeo.ttc"), 0));
@@ -672,7 +678,7 @@ fn cjk_hangul() -> Vec<(String, u32)> {
 fn thai() -> Vec<(String, u32)> {
     let mac_sys = "/System/Library/Fonts";
     let mac_sup = "/System/Library/Fonts/Supplemental";
-    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let win = windows_fonts();
     let lin = [
         "/usr/share/fonts/truetype/noto",
         "/usr/share/fonts/opentype/noto",
@@ -702,7 +708,7 @@ fn thai() -> Vec<(String, u32)> {
 #[cfg(not(target_arch = "wasm32"))]
 fn lao() -> Vec<(String, u32)> {
     let mac_sup = "/System/Library/Fonts/Supplemental";
-    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let win = windows_fonts();
     let lin = ["/usr/share/fonts/truetype/noto", "/usr/share/fonts/opentype/noto", "/usr/share/fonts/truetype", "/usr/share/fonts"];
     let mut v: Vec<(String, u32)> = vec![
         (format!("{win}\\LeelawUI.ttf"), 0), // Leelawadee UI
@@ -724,7 +730,7 @@ fn lao() -> Vec<(String, u32)> {
 fn hebrew() -> Vec<(String, u32)> {
     let mac_sys = "/System/Library/Fonts";
     let mac_sup = "/System/Library/Fonts/Supplemental";
-    let win = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
+    let win = windows_fonts();
     let lin = [
         "/usr/share/fonts/truetype/noto",
         "/usr/share/fonts/opentype/noto",
