@@ -306,10 +306,13 @@ impl PivotWriter {
     pub fn add_sheet(&mut self, wb: &Workbook, si: usize, out: &mut Out, rels: &mut Rels) {
         let Some(sheet) = wb.sheet(si) else { return };
         for (idx, pt) in sheet.pivots.iter().enumerate() {
-            // Reuse an existing cache when the pivot shares one (shared_cache) *and* that cache can
-            // serve this table's axes and groupings; otherwise fall through and write its own.
+            // Reuse an existing cache when the pivot shares one (shared_cache) *and* that cache was
+            // built from the same source and can serve this table's axes and groupings; otherwise
+            // fall through and write its own. A key alone proves nothing: it can arrive from JSON.
             let shared_key = pt.shared_cache.clone();
+            let src = resolve_source(wb, &pt.source, si, 0).map(|(_, _, xml)| xml);
             if let Some((cid, cache_part, cache)) = shared_key.as_ref().and_then(|k| self.shared.get(k))
+                && src.as_deref() == Some(cache.source_xml.as_str())
                 && let Some(axis_map) = shared_axis_map(&cache.fields, pt)
             {
                 let mut reused_cache = cache.clone();
@@ -1177,11 +1180,12 @@ fn pt_settings_xml(pt: &PivotTable) -> String {
         let _ =
             write!(body, "<gc:calculatedItem field=\"{}\" name=\"{}\" formula=\"{}\"/>", esc_attr(&c.field), esc_attr(&c.name), esc_attr(&c.formula));
     }
-    // A value field's base for Difference From / % Difference From. GridCraft's base is another
-    // *value* field, which OOXML's `baseField` (an axis field index) cannot express, so it is kept
-    // here; the standard attributes on `<dataField>` stay as they are for Excel's benefit.
+    // A value field's own settings that OOXML's `<dataField>` cannot express: its base for
+    // Difference From / % Difference From (GridCraft's base is another *value* field, not an axis
+    // field index) and its error/empty replacement text. The standard attributes on `<dataField>`
+    // stay as they are for Excel's benefit.
     for (i, v) in pt.values.iter().enumerate() {
-        if v.base_field.is_none() && v.base_item.is_none() {
+        if v.base_field.is_none() && v.base_item.is_none() && v.error_display.is_none() && v.empty_display.is_none() {
             continue;
         }
         let _ = write!(body, "<gc:valueBase index=\"{i}\"");
@@ -1190,6 +1194,12 @@ fn pt_settings_xml(pt: &PivotTable) -> String {
         }
         if let Some(bi) = &v.base_item {
             let _ = write!(body, " baseItem=\"{}\"", esc_attr(bi));
+        }
+        if let Some(e) = &v.error_display {
+            let _ = write!(body, " errorDisplay=\"{}\"", esc_attr(e));
+        }
+        if let Some(e) = &v.empty_display {
+            let _ = write!(body, " emptyDisplay=\"{}\"", esc_attr(e));
         }
         body.push_str("/>");
     }
@@ -1727,6 +1737,12 @@ fn read_table(cx: &mut Ctx<'_>, x: &El, cache: &CacheIn, id: u32) -> Option<Pivo
             }
             if let Some(bi) = b.attr("baseItem") {
                 v.base_item = Some(bi.to_string());
+            }
+            if let Some(e) = b.attr("errorDisplay") {
+                v.error_display = Some(e.to_string());
+            }
+            if let Some(e) = b.attr("emptyDisplay") {
+                v.empty_display = Some(e.to_string());
             }
         }
     }

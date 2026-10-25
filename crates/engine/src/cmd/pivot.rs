@@ -2278,6 +2278,49 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_selects_the_labels_the_report_shows() {
+        // A grouped field's report item is the bin ("0-10") or the manual group ("Fruit"), but the
+        // filter compared the raw source value, so selecting the label the user sees matched nothing.
+        let mut s = Session::new();
+        s.new_workbook();
+        let rows = json!([["Units", "Sales"], [5, 1], [15, 2], [25, 3], [35, 4]]);
+        s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+        s.execute("selection.set", json!({"range": "A1"})).unwrap();
+        s.execute("insert.pivotTable", json!({"rows": ["Units"], "values": ["Sales"], "destination": "Sheet1!F3"})).unwrap();
+        s.execute("pivot.group", json!({"field": "Units", "by": "numbers", "start": 0.0, "size": 10.0})).unwrap();
+        assert_eq!(labels(&s)[1..4].to_vec(), ["0-10", "10-20", "20-30"], "the report shows bins");
+        s.execute("pivot.filter", json!({"field": "Units", "selected": ["10-20"]})).unwrap();
+        assert_eq!(labels(&s)[1], "10-20", "selecting the bin keeps it, got {:?}", labels(&s));
+
+        // The same for a manual text group.
+        let mut s = Session::new();
+        s.new_workbook();
+        let rows = json!([["Kind", "Sales"], ["Apple", 1], ["Pear", 2], ["Steel", 3]]);
+        s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+        s.execute("selection.set", json!({"range": "A1"})).unwrap();
+        s.execute("insert.pivotTable", json!({"rows": ["Kind"], "values": ["Sales"], "destination": "Sheet1!F3"})).unwrap();
+        s.execute("pivot.group", json!({"field": "Kind", "by": "text", "items": [["Fruit", "Apple", "Pear"]]})).unwrap();
+        assert!(labels(&s).iter().any(|x| x == "Fruit"), "the report shows the group, got {:?}", labels(&s));
+        s.execute("pivot.filter", json!({"field": "Kind", "selected": ["Fruit"]})).unwrap();
+        assert_eq!(labels(&s)[1], "Fruit", "selecting the group keeps it, got {:?}", labels(&s));
+    }
+
+    #[test]
+    fn a_one_sided_timeline_also_drops_values_that_are_not_dates() {
+        // An open-ended range is still a range: "TBD" has no date to compare with the bound.
+        let mut s = Session::new();
+        s.new_workbook();
+        let rows = json!([["Date", "Sales"], ["1/15/2026", 10], ["6/15/2026", 20], ["TBD", 30]]);
+        s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+        s.execute("selection.set", json!({"range": "A1"})).unwrap();
+        s.execute("insert.pivotTable", json!({"rows": ["Date"], "values": ["Sales"], "destination": "Sheet1!F3"})).unwrap();
+        s.execute("pivot.timeline", json!({"field": "Date", "start": "2026-05-01"})).unwrap();
+        let after: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels" && x != "Grand Total").collect();
+        assert_eq!(after.len(), 1, "only June is on or after May, got {after:?}");
+        assert!(!after.iter().any(|x| x.contains("TBD")), "an undateable value is outside the range, got {after:?}");
+    }
+
+    #[test]
     fn a_value_filter_matching_nothing_leaves_the_report_empty() {
         // An "above every aggregate" filter used to refill its allowed set with every item, so the
         // filter silently did nothing.

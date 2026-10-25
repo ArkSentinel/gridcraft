@@ -244,48 +244,23 @@ fn make_item(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: 
 }
 
 impl FieldItems {
+    /// The label a source value shows as, with this field's bins and manual text groups applied.
+    fn grouped_label(&self, wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str) -> Option<(String, String, u8, f64)> {
+        let (key, label, class, num) = grouped_label_of(self.bins, &self.groups, v)?;
+        let _ = (wb, group, fmt);
+        Some((key, label, class, num))
+    }
+
     fn intern(&mut self, wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str, first: usize) -> u32 {
-        // Number bins: bucket a number into [start, start+size) intervals.
-        if let (Some((start, size)), Value::Number(n)) = (self.bins, v) {
-            let idx = ((*n - start) / size).floor() as i64;
-            let lo = start + idx as f64 * size;
-            let hi = lo + size;
-            let label = format!("{lo}-{hi}");
-            let key = format!("b{}", lo.to_bits());
+        if let Some((key, label, class, num)) = self.grouped_label(wb, v, group, fmt) {
             if let Some(i) = self.index.get(&key) {
                 return *i;
             }
-            let item = Item { text: label.to_lowercase(), value: Value::text(label.clone()), label, class: 0, num: lo, first, formatted: false };
+            let item = Item { text: label.to_lowercase(), value: Value::text(label.clone()), label, class, num, first, formatted: false };
             let i = self.items.len() as u32;
             self.items.push(item);
             self.index.insert(key, i);
             return i;
-        }
-        // Manual text grouping: map an item into its group label.
-        if !self.groups.is_empty()
-            && let Value::Text(t) = v
-        {
-            for g in &self.groups {
-                let (name, items) = if g.len() > 1 && g[1..].iter().any(|x| x.eq_ignore_ascii_case(t)) {
-                    (g[0].clone(), &g[1..])
-                } else {
-                    // no explicit name: group named after its first item
-                    (g[0].clone(), &g[..])
-                };
-                if items.iter().any(|x| x.eq_ignore_ascii_case(t)) {
-                    let label = name;
-                    let key = format!("g{}", label.to_lowercase());
-                    if let Some(i) = self.index.get(&key) {
-                        return *i;
-                    }
-                    let item =
-                        Item { text: label.to_lowercase(), value: Value::text(label.clone()), label, class: 1, num: 0.0, first, formatted: false };
-                    let i = self.items.len() as u32;
-                    self.items.push(item);
-                    self.index.insert(key, i);
-                    return i;
-                }
-            }
         }
         let (key, item) = make_item(wb, v, group, fmt, first);
         if let Some(i) = self.index.get(&key) {
@@ -304,9 +279,44 @@ impl FieldItems {
     }
 }
 
+/// A field's grouping applied to a value: the intern key, the label, the item class and the bin
+/// start. `None` when the field groups neither numbers into bins nor texts into manual groups.
+fn grouped_label_of(bins: Option<(f64, f64)>, groups: &[Vec<String>], v: &Value) -> Option<(String, String, u8, f64)> {
+    // Number bins: bucket a number into [start, start+size) intervals.
+    if let (Some((start, size)), Value::Number(n)) = (bins, v) {
+        let idx = ((*n - start) / size).floor() as i64;
+        let lo = start + idx as f64 * size;
+        return Some((format!("b{}", lo.to_bits()), format!("{lo}-{}", lo + size), 0, lo));
+    }
+    // Manual text grouping: map an item into its group label.
+    if let Value::Text(t) = v {
+        for g in groups {
+            let (name, items) = if g.len() > 1 && g[1..].iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                (g[0].clone(), &g[1..])
+            } else {
+                // no explicit name: group named after its first item
+                (g[0].clone(), &g[..])
+            };
+            if items.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                return Some((format!("g{}", name.to_lowercase()), name, 1, 0.0));
+            }
+        }
+    }
+    None
+}
+
 /// The label of a source value under a date grouping (for filters and field lists).
 pub fn item_label(wb: &Workbook, v: &Value, group: PivotDateGroup, fmt: &str) -> String {
     make_item(wb, v, group, fmt, 0).1.label
+}
+
+/// The label a report shows for a source value: the field's bins and manual text groups first (the
+/// same labels [`FieldItems::intern`] produces), then the date grouping.
+fn field_label(wb: &Workbook, v: &Value, f: &PivotField, fmt: &str) -> String {
+    match grouped_label_of(f.group_bins, &f.grouped_items, v) {
+        Some((_, label, _, _)) => label,
+        None => item_label(wb, v, f.date_group, fmt),
+    }
 }
 
 /// Distinct item labels of a source column, sorted like the field list shows them.
@@ -978,20 +988,28 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     if vals.len() > MAX_VALUE_FIELDS {
         return Err(format!("A PivotTable can have at most {MAX_VALUE_FIELDS} value fields."));
     }
-    let axis_group = |name: &str| -> Option<PivotDateGroup> {
-        pt.rows.iter().chain(pt.columns.iter()).find(|f| f.source_col.eq_ignore_ascii_case(name)).map(|f| f.date_group)
-    };
-    // (column, filter, grouping used for labels, shown as a report filter)
-    let filters: Vec<(usize, &PivotFilter, PivotDateGroup, bool)> = pt
+    // A filter compares source values through the labels the report shows, so it needs the field's
+    // bins and manual groups too, not just its date grouping. Only an axis field carries those.
+    let filter_field =
+        |name: &str| -> Option<&PivotField> { pt.rows.iter().chain(pt.columns.iter()).find(|f| f.source_col.eq_ignore_ascii_case(name)) };
+    // (column, filter, axis field whose grouping labels the filter compares, shown as a report filter)
+    let filters: Vec<(usize, &PivotFilter, Option<&PivotField>, bool)> = pt
         .filters
         .iter()
         .filter_map(|f| {
             let c = src.col(&f.source_col)?;
-            let g = axis_group(&f.source_col);
-            Some((c, f, g.unwrap_or_default(), g.is_none()))
+            let pf = filter_field(&f.source_col);
+            Some((c, f, pf, pf.is_none()))
         })
         .collect();
-    let shown_filters: Vec<&(usize, &PivotFilter, PivotDateGroup, bool)> = filters.iter().filter(|f| f.3).collect();
+    let shown_filters: Vec<&(usize, &PivotFilter, Option<&PivotField>, bool)> = filters.iter().filter(|f| f.3).collect();
+    // The label a filter compares for a source value.
+    let filter_label = |wb: &Workbook, v: &Value, f: Option<&PivotField>, fmt: &str| -> String {
+        match f {
+            Some(f) => field_label(wb, v, f, fmt),
+            None => item_label(wb, v, PivotDateGroup::None, fmt),
+        }
+    };
 
     let k = vals.len();
     let empty = rows.is_empty() && cols.is_empty() && vals.is_empty();
@@ -1022,9 +1040,9 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, f64>> = std::collections::HashMap::new();
     for rec in &src.rows {
         let mut skip = false;
-        for (c, f, g, _) in &filters {
+        for (c, f, pf, _) in &filters {
             if let Some(sel) = &f.selected {
-                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, &fmt_of(*c));
+                let label = filter_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *pf, &fmt_of(*c));
                 if !sel.iter().any(|x| x.eq_ignore_ascii_case(&label)) {
                     skip = true;
                     break;
@@ -1034,11 +1052,11 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
         if skip {
             continue;
         }
-        for (c, f, g, _) in &filters {
+        for (c, f, pf, _) in &filters {
             if f.value_filter.is_none() {
                 continue;
             }
-            let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, &fmt_of(*c));
+            let label = filter_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *pf, &fmt_of(*c));
             let Some(vf) = f.value_filter.as_ref() else {
                 continue;
             };
@@ -1152,15 +1170,15 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
         col_sort_cols.iter().map(|c| c.map(|_| std::collections::HashMap::new())).collect();
 
     'rec: for (ri, rec) in src.rows.iter().enumerate() {
-        for ((c, f, g, _), fmt) in filters.iter().zip(filter_fmts.iter()) {
+        for ((c, f, pf, _), fmt) in filters.iter().zip(filter_fmts.iter()) {
             if let Some(sel) = &f.selected {
-                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, fmt);
+                let label = filter_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *pf, fmt);
                 if !sel.iter().any(|s| s.eq_ignore_ascii_case(&label)) {
                     continue 'rec;
                 }
             }
             if let Some(set) = allowed.get(&f.source_col) {
-                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, fmt);
+                let label = filter_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *pf, fmt);
                 if !set.contains(&label) {
                     continue 'rec;
                 }
@@ -1257,7 +1275,7 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             let items = if on_rows { &mut row_items } else { &mut col_items };
             for (ri, rec) in src.rows.iter().enumerate() {
                 let v = rec.get(*c).unwrap_or(&Value::Empty);
-                let label = item_label(wb, v, f.date_group, &fmt);
+                let label = field_label(wb, v, f, &fmt);
                 if hidden.is_some_and(|sel| !sel.iter().any(|x| x.eq_ignore_ascii_case(&label))) {
                     continue;
                 }
@@ -2108,10 +2126,9 @@ pub fn timeline_labels(wb: &Workbook, pt: &PivotTable, src: &Source, field: &str
             (Some(d), Some(s), None) => d >= s,
             (Some(d), None, Some(e)) => d <= e,
             (Some(_), None, None) => true,
-            // A bounded range can't place an undateable value, so it is excluded; an open-ended one
-            // keeps them, since there is no range to be outside of.
-            (None, Some(_), Some(_)) => false,
-            (None, _, _) => true,
+            // Any bound makes this a range, and a value with no date cannot be placed in one.
+            (None, None, None) => true,
+            (None, _, _) => false,
         };
         if !in_range {
             continue;

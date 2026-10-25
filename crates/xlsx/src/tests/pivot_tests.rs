@@ -912,10 +912,44 @@ fn a_value_fields_base_survives_the_round_trip() {
         v.show_as = PivotShowAs::DifferenceFrom;
         v.base_field = Some("Units".into());
         v.base_item = Some("B".into());
+        // The error/empty replacement text has no standard attribute either.
+        v.error_display = Some("#N/A".into());
+        v.empty_display = Some("-".into());
     }
     let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
     let v = &back.sheet(1).unwrap().pivots[2].values[0];
     assert_eq!(v.show_as, PivotShowAs::DifferenceFrom, "the mode survives");
     assert_eq!(v.base_field.as_deref(), Some("Units"), "the base value field survives");
     assert_eq!(v.base_item.as_deref(), Some("B"), "the base item survives");
+    assert_eq!(v.error_display.as_deref(), Some("#N/A"), "the error text survives");
+    assert_eq!(v.empty_display.as_deref(), Some("-"), "the empty text survives");
+}
+
+#[test]
+fn a_shared_cache_key_does_not_cross_sources() {
+    // `shared_cache` is plain JSON: two tables can carry the same key while reading different
+    // ranges. Reusing the first one's cache would save the second pointing at the wrong data.
+    let mut wb = workbook();
+    {
+        let sh = wb.sheet_mut(1).unwrap();
+        sh.pivots[1].shared_cache = Some("Cache1".into());
+        sh.pivots[2].shared_cache = Some("Cache1".into());
+        // Same field names, different range.
+        sh.pivots[2].source = "Data!$A$1:$F$5".into();
+    }
+    let bytes = write_xlsx(&wb).unwrap();
+    let parts = unzip(&bytes);
+    let caches = parts.keys().filter(|k| k.starts_with("xl/pivotCache/pivotCacheDefinition")).count();
+    assert!(caches >= 3, "a different source gets its own cache (pivot 0's, the shared one, theirs), got {caches}");
+    // Each written cache names its own range, so neither table reads the other's rows.
+    let ranges: Vec<String> = parts
+        .iter()
+        .filter(|(k, _)| k.starts_with("xl/pivotCache/pivotCacheDefinition"))
+        .map(|(_, v)| String::from_utf8_lossy(v).to_string())
+        .filter_map(|x| {
+            let i = x.find("<worksheetSource ref=\"")? + "<worksheetSource ref=\"".len();
+            x[i..].split('"').next().map(str::to_string)
+        })
+        .collect();
+    assert!(ranges.iter().any(|r| r.ends_with("F5")), "the second table's own range is written, got {ranges:?}");
 }
