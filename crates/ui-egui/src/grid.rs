@@ -3209,8 +3209,10 @@ fn in_cell_editor(app: &mut SheetApp, ui: &mut egui::Ui, geo: &Geo, sh: &Sheet, 
     // pre-wrap cell rect must also be positive: a hidden row/column has zero height/width, but
     // Wrap Text can expand the editor below/right of it, which must not paint over the next line.
     let cell_visible = rect.width() > 0.0 && rect.height() > 0.0;
-    let on_screen = cell_visible && erect.intersect(quadrant).is_positive() && !geo.hidden_under_frozen(sh, cell);
-    let clip = if on_screen { ui.clip_rect().intersect(quadrant) } else { Rect::NOTHING };
+    // `erect` and `ui.clip_rect()` are in screen coordinates; `quadrant` is logical until mirrored.
+    let screen_quadrant = geo.mirror_rect(quadrant);
+    let on_screen = cell_visible && erect.intersect(screen_quadrant).is_positive() && !geo.hidden_under_frozen(sh, cell);
+    let clip = if on_screen { ui.clip_rect().intersect(screen_quadrant) } else { Rect::NOTHING };
     let painter = ui.painter().with_clip_rect(clip);
     painter.rect_filled(erect, 0.0, fill);
     painter.rect_stroke(erect.expand(1.0), 0.0, Stroke::new(2.0, Tokens::get(ui.ctx()).sel_border), StrokeKind::Middle);

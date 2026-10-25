@@ -36,8 +36,9 @@ fn main() {
 /// The optional craft-fonts build input (<https://github.com/storytold/craft-fonts>, recipe from
 /// its `docs/integration.md`). With `CRAFT_FONTS_DIR=<absolute checkout>` the permitted fonts in
 /// its `fonts/manifest.txt` are embedded as `CRAFT_FONTS` for `theme`'s fallback chains; unset,
-/// the table is empty. Release and acceptance builds also set `CRAFT_FONTS_REQUIRED=1`, which
-/// turns a missing checkout, a missing required face or a malformed row into a build error.
+/// the table is empty. Release and acceptance builds also set `CRAFT_FONTS_REQUIRED=1` (exactly
+/// `1`; any other value leaves required mode off), which turns a missing checkout, a missing
+/// required face or a malformed row into a build error.
 ///
 /// GridCraft never copies font bytes into this repository and never reads a fixture from Cargo
 /// configuration: the only input is the environment variable. Barred Adobe/Source/Noto CJK faces
@@ -48,13 +49,13 @@ fn main() {
 fn emit_craft_fonts() {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
-    let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some();
+    let required = craft_fonts_policy::required_mode(std::env::var("CRAFT_FONTS_REQUIRED").ok().as_deref());
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
     let mut src = String::new();
     let _ = writeln!(src, "pub static CRAFT_FONTS_REQUIRED: bool = {required};");
     src.push_str("pub static CRAFT_FONTS: &[CraftFont] = &[\n");
     match std::env::var_os("CRAFT_FONTS_DIR").map(std::path::PathBuf::from) {
-        Some(dir) => match craft_fonts(&dir, wasm) {
+        Some(dir) => match craft_fonts(&dir, wasm, required) {
             Ok(entries) => src.push_str(&entries),
             Err(e) if required => {
                 println!("cargo::error=CRAFT_FONTS_DIR={}: {e}", dir.display());
@@ -74,8 +75,7 @@ fn emit_craft_fonts() {
 }
 
 /// One `CraftFont { .. }` initialiser per manifest row GridCraft may embed.
-fn craft_fonts(dir: &std::path::Path, wasm: bool) -> Result<String, String> {
-    let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some();
+fn craft_fonts(dir: &std::path::Path, wasm: bool, required: bool) -> Result<String, String> {
     let manifest = dir.join("fonts/manifest.txt");
     println!("cargo::rerun-if-changed={}", manifest.display());
     let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;

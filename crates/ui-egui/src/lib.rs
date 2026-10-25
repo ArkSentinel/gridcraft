@@ -1204,94 +1204,19 @@ impl SheetApp {
 
     /// Per-frame logic (control channel, screenshots). Call before `ui`.
     pub fn logic(&mut self, ctx: &egui::Context) {
-        if self.session.text_width.is_none() {
-            let ctx = ctx.clone();
-            self.session.text_width = Some(std::sync::Arc::new(move |text, font, exact| theme::cell_text_width(&ctx, text, font, exact)));
-        }
+        self.ensure_text_width(ctx);
         // A keytip control request lives one frame: the ribbon consumes it during `ui`, and
         // anything that never reached a control (collapsed ribbon, tab switch) is dropped.
         self.ui.keytip_invoke = None;
         // Floating pictures' textures go with their workbook, even when no sheet is painted.
         let open: Vec<u64> = self.session.documents().iter().map(|d| d.uid).collect();
         floating_pictures::forget_closed(ctx, &open);
-        // A pending synthetic step owns the next real `ui` pass: `ui` returns at the font gate
-        // before it handles input, so a font change requested now would consume the step without
-        // applying it. Delay the change one frame; the hidden-paint request keeps it coming.
-        let defer_font_change = self.synthetic_pending || !self.synthetic.is_empty();
-        if !defer_font_change && self.fonts_han.is_some_and(|han| han != theme::HanOrder::of(self.ui.language)) {
-            self.fonts_ready = false;
-            self.fonts_set = false;
-        }
-        if !self.fonts_ready {
-            // New fonts apply from the next frame on: paint nothing until then. Startup always
-            // proceeds: without it a queued step would be re-offered forever.
-            if self.fonts_set {
-                self.fonts_ready = true;
-            } else {
-                if self.prepared_fonts {
-                    ctx.set_fonts(theme::pinned_font_definitions());
-                    theme::apply(ctx, self.ui.dark);
-                } else {
-                    SheetApp::setup_context_for_language(ctx, self.ui.dark, self.ui.language);
-                }
-                self.fonts_set = true;
-                // The rebuilt set has no workbook fonts yet: bind them again once it is active.
-                self.fonts_bound.clear();
-                self.fonts_seen = (0, 0);
-                self.fonts_han = Some(theme::HanOrder::of(self.ui.language));
-                ctx.request_repaint();
-            }
-        } else if self.fonts_rebind {
-            // A font-set change made last frame is active now.
-            self.fonts_rebind = false;
-        } else if !defer_font_change && !self.prepared_fonts && fonts::scan_done() {
-            // Bind the workbook's installed fonts once the background scan has finished. Adding
-            // fonts re-applies the font set, which egui activates at the next pass, so skip this
-            // frame's paint (same one-frame cost as startup). Only when the workbook changed.
-            let seen = self.session.active().map(|d| (d.uid, d.revision)).unwrap_or((0, 0));
-            if seen != self.fonts_seen {
-                let used = self.used_fonts();
-                self.fonts_seen = seen;
-                if used != self.fonts_bound {
-                    ctx.set_fonts(theme::font_definitions_with(self.ui.language, &used));
-                    self.fonts_bound = used;
-                    self.fonts_rebind = true;
-                    ctx.request_repaint();
-                }
-            }
-        }
+        self.apply_font_state(ctx);
         if let Some(answer) = self.desktop_theme.take_change() {
             self.desktop_dark = Some(answer);
         }
-        let preference = match (
-            self.ui.system_theme,
-            ctx.system_theme().or_else(|| self.desktop_dark.map(|d| if d { egui::Theme::Dark } else { egui::Theme::Light })),
-        ) {
-            (true, Some(egui::Theme::Dark)) => egui::ThemePreference::Dark,
-            (true, Some(egui::Theme::Light)) => egui::ThemePreference::Light,
-            _ => self.ui.theme_preference(),
-        };
-        if ctx.options(|o| o.theme_preference) != preference {
-            ctx.set_theme(preference);
-            ctx.request_repaint();
-        }
-        self.effective_dark = ctx.theme() == egui::Theme::Dark;
-        // Interface size: the preference owns the zoom factor, so egui's own Ctrl/Cmd +/-/0 zoom
-        // keys stay off (they would also swallow GridCraft's shortcuts).
-        if ctx.options(|o| o.zoom_with_keyboard) {
-            ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        }
-        // egui closes the window on Ctrl+Q (and with Shift or Alt held too) without asking to save
-        // (#1443). Excel for Windows has no such key (Ctrl+Q is Quick Analysis); macOS keeps Cmd+Q,
-        // the app's Quit there.
-        if ctx.os() != egui::os::OperatingSystem::Mac && ctx.options(|o| !o.quit_shortcuts.is_empty()) {
-            ctx.options_mut(|o| o.quit_shortcuts.clear());
-        }
-        let zoom = self.ui.zoom_factor();
-        if (ctx.zoom_factor() - zoom).abs() > 0.001 {
-            ctx.set_zoom_factor(zoom);
-            ctx.request_repaint();
-        }
+        self.sync_theme_preference(ctx);
+        self.sync_input_options(ctx);
         // The geometry captures are bound to. Native frames recorded it from their fresh
         // `RawInput` in `raw_input_hook` (including hidden logic-only ticks); the epoch is
         // monotonic, so a resize back to the original values is still a new epoch and old pixels
@@ -1309,6 +1234,124 @@ impl SheetApp {
         self.poll_printing(ctx);
         self.guard_window_close(ctx);
         // Files read asynchronously (web file picker, dropped files).
+        self.poll_async_opens();
+        self.autosave(ctx);
+        self.update_title(ctx);
+        self.request_hidden_paint(ctx);
+        if self.session.active().is_none() {
+            self.session.new_workbook();
+        }
+    }
+
+    /// Installs the text-width closure once, on the first frame.
+    fn ensure_text_width(&mut self, ctx: &egui::Context) {
+        if self.session.text_width.is_some() {
+            return;
+        }
+        let ctx = ctx.clone();
+        self.session.text_width = Some(std::sync::Arc::new(move |text, font, exact| theme::cell_text_width(&ctx, text, font, exact)));
+    }
+
+    /// Applies the font gates: a language Han-order change, startup/prepared fonts and workbook
+    /// font binding. Every branch keeps its one-frame paint gate.
+    fn apply_font_state(&mut self, ctx: &egui::Context) {
+        // A pending synthetic step owns the next real `ui` pass: `ui` returns at the font gate
+        // before it handles input, so a font change requested now would consume the step without
+        // applying it. Delay the change one frame; the hidden-paint request keeps it coming.
+        let defer_font_change = self.synthetic_pending || !self.synthetic.is_empty();
+        if !defer_font_change && self.fonts_han.is_some_and(|han| han != theme::HanOrder::of(self.ui.language)) {
+            self.fonts_ready = false;
+            self.fonts_set = false;
+        }
+        if !self.fonts_ready {
+            self.start_font_setup(ctx);
+        } else if self.fonts_rebind {
+            // A font-set change made last frame is active now.
+            self.fonts_rebind = false;
+        } else if !defer_font_change && !self.prepared_fonts && fonts::scan_done() {
+            self.rebind_workbook_fonts(ctx);
+        }
+    }
+
+    /// Applies the pending font set. New fonts apply from the next frame on: paint nothing until
+    /// then. Startup always proceeds: without it a queued step would be re-offered forever.
+    fn start_font_setup(&mut self, ctx: &egui::Context) {
+        if self.fonts_set {
+            self.fonts_ready = true;
+            return;
+        }
+        if self.prepared_fonts {
+            ctx.set_fonts(theme::pinned_font_definitions());
+            theme::apply(ctx, self.ui.dark);
+        } else {
+            SheetApp::setup_context_for_language(ctx, self.ui.dark, self.ui.language);
+        }
+        self.fonts_set = true;
+        // The rebuilt set has no workbook fonts yet: bind them again once it is active.
+        self.fonts_bound.clear();
+        self.fonts_seen = (0, 0);
+        self.fonts_han = Some(theme::HanOrder::of(self.ui.language));
+        ctx.request_repaint();
+    }
+
+    /// Binds the workbook's installed fonts once the background scan has finished. Adding fonts
+    /// re-applies the font set, which egui activates at the next pass, so skip this frame's paint
+    /// (same one-frame cost as startup). Only when the workbook changed.
+    fn rebind_workbook_fonts(&mut self, ctx: &egui::Context) {
+        let seen = self.session.active().map(|d| (d.uid, d.revision)).unwrap_or((0, 0));
+        if seen == self.fonts_seen {
+            return;
+        }
+        let used = self.used_fonts();
+        self.fonts_seen = seen;
+        if used == self.fonts_bound {
+            return;
+        }
+        ctx.set_fonts(theme::font_definitions_with(self.ui.language, &used));
+        self.fonts_bound = used;
+        self.fonts_rebind = true;
+        ctx.request_repaint();
+    }
+
+    /// Follows the desktop/system theme preference and records the effective theme.
+    fn sync_theme_preference(&mut self, ctx: &egui::Context) {
+        let preference = match (
+            self.ui.system_theme,
+            ctx.system_theme().or_else(|| self.desktop_dark.map(|d| if d { egui::Theme::Dark } else { egui::Theme::Light })),
+        ) {
+            (true, Some(egui::Theme::Dark)) => egui::ThemePreference::Dark,
+            (true, Some(egui::Theme::Light)) => egui::ThemePreference::Light,
+            _ => self.ui.theme_preference(),
+        };
+        if ctx.options(|o| o.theme_preference) != preference {
+            ctx.set_theme(preference);
+            ctx.request_repaint();
+        }
+        self.effective_dark = ctx.theme() == egui::Theme::Dark;
+    }
+
+    /// Keeps egui's own keyboard zoom and quit shortcuts off and applies GridCraft's zoom factor.
+    fn sync_input_options(&mut self, ctx: &egui::Context) {
+        // Interface size: the preference owns the zoom factor, so egui's own Ctrl/Cmd +/-/0 zoom
+        // keys stay off (they would also swallow GridCraft's shortcuts).
+        if ctx.options(|o| o.zoom_with_keyboard) {
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        }
+        // egui closes the window on Ctrl+Q (and with Shift or Alt held too) without asking to save
+        // (#1443). Excel for Windows has no such key (Ctrl+Q is Quick Analysis); macOS keeps Cmd+Q,
+        // the app's Quit there.
+        if ctx.os() != egui::os::OperatingSystem::Mac && ctx.options(|o| !o.quit_shortcuts.is_empty()) {
+            ctx.options_mut(|o| o.quit_shortcuts.clear());
+        }
+        let zoom = self.ui.zoom_factor();
+        if (ctx.zoom_factor() - zoom).abs() > 0.001 {
+            ctx.set_zoom_factor(zoom);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Opens files that arrived asynchronously (web file picker, dropped files).
+    fn poll_async_opens(&mut self) {
         let arrived: Vec<(String, Vec<u8>)> = self
             .services
             .inbox
@@ -1331,51 +1374,55 @@ impl SheetApp {
             }
             self.after_engine();
         }
-        // AutoSave: save workbooks that have a file shortly after they change. This decision
-        // lives in `logic` so a hidden or logic-only frame still saves; the monotonic timestamp
-        // check keeps a forced hidden UI pass from saving the same change twice.
+    }
+
+    /// AutoSave: save workbooks that have a file shortly after they change. This decision lives in
+    /// `logic` so a hidden or logic-only frame still saves; the monotonic timestamp check keeps a
+    /// forced hidden UI pass from saving the same change twice.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let dirty_xlsx = self.session.active().is_some_and(|d| d.is_dirty() && d.path.as_deref().is_some_and(|p| p.ends_with(".xlsx")));
         let now = crate::monotonic_ms();
-        let autosave_due = self.ui.autosave
-            && self.editor.is_none()
-            && self.text_box_editor.is_none()
-            && now - self.grid.last_autosave > 2000.0
-            && self.session.active().is_some_and(|d| d.is_dirty() && d.path.as_deref().is_some_and(|p| p.ends_with(".xlsx")));
+        let autosave_due =
+            self.ui.autosave && self.editor.is_none() && self.text_box_editor.is_none() && now - self.grid.last_autosave > 2000.0 && dirty_xlsx;
         if autosave_due {
             self.grid.last_autosave = now;
             self.store_view_state();
             let _ = self.session.run("file.save", json!({}));
-        } else if self.ui.autosave && self.session.active().is_some_and(|d| d.is_dirty() && d.path.as_deref().is_some_and(|p| p.ends_with(".xlsx"))) {
+        } else if self.ui.autosave && dirty_xlsx {
             // Keep checking even when no input arrives while the window is hidden.
             ctx.request_repaint_after(std::time::Duration::from_secs(2));
         }
-        // Window title, next to the close/autosave state: `ViewportCommand::Title` is valid
-        // outside a pass and a control-channel rename while hidden updates it on return.
-        if let Some(d) = self.session.active() {
-            let title = format!("{}{}", d.display_title(), if d.is_dirty() { " — Edited" } else { "" });
-            if self.grid.last_title.as_deref() != Some(title.as_str()) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-                self.grid.last_title = Some(title);
-            }
+    }
+
+    /// Window title, next to the close/autosave state: `ViewportCommand::Title` is valid outside a
+    /// pass and a control-channel rename while hidden updates it on return.
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let Some(d) = self.session.active() else { return };
+        let title = format!("{}{}", d.display_title(), if d.is_dirty() { " — Edited" } else { "" });
+        if self.grid.last_title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.grid.last_title = Some(title);
         }
-        // A queued/settling capture with a capturable size and an unapplied synthetic step both
-        // need a real `ui` pass. Once a capture is issued, its `Screenshot` command's own
-        // `wants_paint` paints the hidden window; after that a full hidden pass every frame only
-        // wastes CPU. A minimized request has no size, so no hidden pass can reach issuance: the
-        // restore pass issues it instead. Native eframe honours `RequestPaintWhileHidden`; the
-        // web runner does not (hidden tabs only run `run_logic`), so a hidden web tab queues the
-        // work until it is shown again. This is a shared eframe web follow-up, not a
-        // GridCraft-local workaround, and the control protocol documents the limitation.
-        if self.shots.needs_hidden_paint() || self.synthetic_pending || !self.synthetic.is_empty() {
-            // The web runner has no `RequestPaintWhileHidden`; sending it there only logs an
-            // unhandled command. A visible tab still gets the repaint below; a hidden tab keeps
-            // the work queued (see the shared eframe follow-up in docs/egui-037-local-followups.md).
-            #[cfg(not(target_arch = "wasm32"))]
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
-            ctx.request_repaint();
+    }
+
+    /// A queued/settling capture with a capturable size and an unapplied synthetic step both need
+    /// a real `ui` pass. Once a capture is issued, its `Screenshot` command's own `wants_paint`
+    /// paints the hidden window; after that a full hidden pass every frame only wastes CPU. A
+    /// minimized request has no size, so no hidden pass can reach issuance: the restore pass issues
+    /// it instead. Native eframe honours `RequestPaintWhileHidden`; the web runner does not (hidden
+    /// tabs only run `run_logic`), so a hidden web tab queues the work until it is shown again.
+    /// This is a shared eframe web follow-up, not a GridCraft-local workaround, and the control
+    /// protocol documents the limitation.
+    fn request_hidden_paint(&self, ctx: &egui::Context) {
+        if !(self.shots.needs_hidden_paint() || self.synthetic_pending || !self.synthetic.is_empty()) {
+            return;
         }
-        if self.session.active().is_none() {
-            self.session.new_workbook();
-        }
+        // The web runner has no `RequestPaintWhileHidden`; sending it there only logs an
+        // unhandled command. A visible tab still gets the repaint below; a hidden tab keeps the
+        // work queued (see the shared eframe follow-up in docs/egui-037-local-followups.md).
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+        ctx.request_repaint();
     }
 
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {

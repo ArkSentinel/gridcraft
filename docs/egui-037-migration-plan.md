@@ -13,6 +13,9 @@ WASM, parity and keytips. Actual totals are 2,463 passed, none failed and one ig
 Independent review verified the merged main behavior and the final scroll/accessibility fixes.
 The local merge preserves both migration history and the reviewed upstream changes;
 final code and dependency bytes match the passing CI. Subsequent status edits are prose only.
+Main advanced to `17b9f6ff0125209fe707efc919690632ff49cb0b` after that CI run; this tree does
+not include it. The pass above therefore does not qualify the later integration, and PR CI must
+pass on the combined tree before it is described as validated.
 Native/platform/performance and application E21b qualification remain open; canonical
 pins and full CI do not imply that every native contract is qualified.
 Human review and explicit publication approval are required. Earlier compiler logs,

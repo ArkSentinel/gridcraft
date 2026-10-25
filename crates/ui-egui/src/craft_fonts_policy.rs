@@ -53,6 +53,12 @@ pub struct ManifestRow {
     pub sha256: String,
 }
 
+/// Whether the `CRAFT_FONTS_REQUIRED` value enables required mode. Only exactly `1` does:
+/// `0`, an empty value and other words are not accepted as an implicit yes.
+pub fn required_mode(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 /// Whether `family` is barred by GridCraft's asset policy.
 pub fn barred(family: &str) -> bool {
     BARRED_PREFIXES.iter().any(|prefix| family.starts_with(prefix))
@@ -182,6 +188,15 @@ mod tests {
         for family in ["Noto Sans Symbols", "Noto Sans Symbols 2", "BIZ UDPGothic", "NanumGothic"] {
             assert!(!barred(family), "{family} must be permitted");
         }
+    }
+
+    #[test]
+    fn only_the_value_one_enables_required_mode() {
+        assert!(!required_mode(None));
+        for value in ["", "0", "00", "01", "false", "true", "yes"] {
+            assert!(!required_mode(Some(value)), "{value:?} must not enable required mode");
+        }
+        assert!(required_mode(Some("1")));
     }
 
     #[test]

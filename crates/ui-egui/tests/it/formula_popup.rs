@@ -1,6 +1,7 @@
 //! Formula helpers must stay in the worksheet while its editor scrolls.
 use egui::{Context, Id, LayerId, Order, RawInput, Rect, pos2, vec2};
 use gridcraft_engine::Session;
+use gridcraft_engine::core::CellRef;
 use gridcraft_ui_egui::SheetApp;
 
 fn frame(ctx: &Context, app: &mut SheetApp) -> egui::FullOutput {
@@ -191,6 +192,51 @@ fn cell_editor_and_helper_stay_below_the_frozen_top_row() {
     app.view_mut().unwrap().scroll.y = 0.0;
     frames(&ctx, &mut app);
     assert!(visible(&ctx, "gridcraft.cell_editor"), "scrolling back restores the helper");
+}
+
+/// The editor is drawn in screen coordinates, so its frozen-pane quadrant must be mirrored
+/// before the visibility test and clip on a right-to-left sheet. Both panes are checked: using
+/// the logical quadrant hides the frozen editor, and lets the scrolling editor's clip reach into
+/// the frozen pane.
+#[test]
+fn frozen_column_editor_paints_in_both_panes_on_a_right_to_left_sheet() {
+    for (cell, text) in [("A2", "frozen"), ("B2", "scrolling")] {
+        let ctx = Context::default();
+        let mut session = Session::new();
+        session.new_workbook();
+        session.run("view.rightToLeft", serde_json::json!({"on": true})).unwrap();
+        session.run("view.freezeFirstColumn", serde_json::json!({})).unwrap();
+        session.run("selection.set", serde_json::json!({"cell": cell})).unwrap();
+        let mut app = crate::common::app(session);
+        frames(&ctx, &mut app);
+        app.begin_edit(Some(text.into()), false);
+        frames(&ctx, &mut app);
+        let output = frame(&ctx, &mut app);
+        let geo = app.grid.geo.as_ref().expect("the grid drew");
+        assert!(geo.rtl && geo.fc == 1, "the test needs a right-to-left frozen column");
+        let sh = app.session.active().unwrap().wb.active().unwrap();
+        let target = CellRef::parse(cell).unwrap();
+        let screen_cell = geo.screen_cell_rect(sh, target);
+        let split = pos2(geo.cells.left() + geo.frozen_w, geo.cells.top() + geo.frozen_h);
+        let quadrant = Rect::from_min_max(
+            pos2(if target.col >= geo.fc { split.x } else { geo.cells.left() }, if target.row >= geo.fr { split.y } else { geo.cells.top() }),
+            pos2(if target.col >= geo.fc { geo.cells.right() } else { split.x }, if target.row >= geo.fr { geo.cells.bottom() } else { split.y }),
+        );
+        let screen_quadrant = geo.mirror_rect(quadrant);
+        let (clipped, _) = output
+            .shapes
+            .iter()
+            .find_map(|s| {
+                let egui::Shape::Text(t) = &s.shape else { return None };
+                (t.galley.text() == text && s.clip_rect.intersect(t.visual_bounding_rect()).intersect(screen_cell).is_positive()).then_some((s, t))
+            })
+            .expect("the editor text is painted inside its screen cell");
+        assert!(
+            screen_quadrant.contains_rect(clipped.clip_rect),
+            "the editor of {cell} must stay inside its screen pane {screen_quadrant:?}, not {:?}",
+            clipped.clip_rect
+        );
+    }
 }
 
 #[test]

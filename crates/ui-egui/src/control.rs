@@ -969,6 +969,39 @@ fn timeout_reply(message: &str, token: u64) -> Json {
     json!({"ok": false, "error": message, "request": token})
 }
 
+/// The bytes to reserve for one capture of `expected` against `geometry`, after checking the
+/// applicable limits. Issuance and retry both use this (admission keeps its own inline checks) so a
+/// retry cannot drift from the limits the first issuance applied. `expected` is `None` when the
+/// viewport has no capturable size yet: that reserves [`UNKNOWN_CAPTURE_BYTES`] and still checks
+/// the aggregate limit, while the per-image, encoding and peak checks only apply once a size is
+/// known.
+fn capture_bytes(app: &SheetApp, i: usize, geometry: CaptureGeometry, expected: Option<[usize; 2]>, base64: bool) -> Result<usize, String> {
+    let bytes = match expected {
+        Some(expected) => {
+            let bytes = geometry.retained_bytes().ok_or_else(|| "screenshot failed: the window size overflows the screenshot budget".to_string())?;
+            if bytes > SCREENSHOT_MAX_IMAGE_BYTES {
+                return Err(format!(
+                    "screenshot budget exceeded: {bytes} bytes for one {}×{} image, over the {SCREENSHOT_MAX_IMAGE_BYTES}-byte per-image limit",
+                    expected[0], expected[1]
+                ));
+            }
+            check_encoding_budget(expected, base64)?;
+            bytes
+        }
+        None => UNKNOWN_CAPTURE_BYTES,
+    };
+    let others = app.shots.requests.iter().enumerate().filter(|(j, _)| *j != i).fold(0usize, |sum, (_, r)| sum.saturating_add(r.bytes));
+    if others.saturating_add(bytes) > SCREENSHOT_MAX_AGGREGATE_BYTES {
+        return Err(format!(
+            "screenshot budget exceeded: {bytes} bytes for this image would exceed the {SCREENSHOT_MAX_AGGREGATE_BYTES}-byte aggregate limit"
+        ));
+    }
+    if let Some(expected) = expected {
+        check_peak_budget(others.saturating_add(bytes), expected, base64)?;
+    }
+    Ok(bytes)
+}
+
 /// Issued from `ui`: counts one real (non-discarded) settling pass per request, revalidates the
 /// geometry and reserves the exact retained bytes, then sends one
 /// `ViewportCommand::Screenshot(callback)` per request.
@@ -1025,38 +1058,13 @@ pub fn issue_screenshots(app: &mut SheetApp, ctx: &egui::Context) {
             app.shots.requests[i].expected = None;
             continue;
         };
-        let Some(bytes) = current.retained_bytes() else {
-            failures.push((i, "screenshot failed: the window size overflows the screenshot budget".into()));
-            continue;
+        let bytes = match capture_bytes(app, i, current, Some(expected), base64) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                failures.push((i, message));
+                continue;
+            }
         };
-        if bytes > SCREENSHOT_MAX_IMAGE_BYTES {
-            failures.push((
-                i,
-                format!(
-                    "screenshot budget exceeded: {bytes} bytes for one {}×{} image, over the {SCREENSHOT_MAX_IMAGE_BYTES}-byte per-image limit",
-                    expected[0], expected[1]
-                ),
-            ));
-            continue;
-        }
-        if let Err(message) = check_encoding_budget(expected, base64) {
-            failures.push((i, message));
-            continue;
-        }
-        let others = app.shots.requests.iter().enumerate().filter(|(j, _)| *j != i).fold(0usize, |sum, (_, r)| sum.saturating_add(r.bytes));
-        if others.saturating_add(bytes) > SCREENSHOT_MAX_AGGREGATE_BYTES {
-            failures.push((
-                i,
-                format!(
-                    "screenshot budget exceeded: {bytes} bytes for this image would exceed the {SCREENSHOT_MAX_AGGREGATE_BYTES}-byte aggregate limit"
-                ),
-            ));
-            continue;
-        }
-        if let Err(message) = check_peak_budget(others.saturating_add(bytes), expected, base64) {
-            failures.push((i, message));
-            continue;
-        }
         // Update the geometry and its epoch together, so the drain accepts exactly the layout the
         // capture is issued against even when a hidden logic tick already saw the new viewport.
         let epoch = note_capture_geometry(app, current);
@@ -1074,11 +1082,7 @@ pub fn issue_screenshots(app: &mut SheetApp, ctx: &egui::Context) {
         r.issued = true;
     }
     for (i, message) in failures.into_iter().rev() {
-        let request = app.shots.requests.remove(i);
-        if let Some(slot) = request.slot {
-            slot.cancel();
-        }
-        reject_shot(request.reply, request.token, message);
+        reject_shot_at(app, i, message);
     }
     if app.shots.in_flight() {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -1109,6 +1113,16 @@ fn validate_image(image: &egui::ColorImage, expected: [usize; 2]) -> Result<(), 
     Ok(())
 }
 
+/// What [`drain_screenshots`] must do with one request after inspecting it.
+enum DrainAction {
+    /// Still waiting; leave the request at the same index.
+    Keep,
+    /// Answer the request with this reply and remove it.
+    Remove(Json),
+    /// Re-arm the request for a fresh capture within its retry budget.
+    Restart,
+}
+
 /// Called from `logic`: takes each completed slot once, validates identity, size, geometry/epoch
 /// and **deadline** and only then encodes, writes and replies outside the slot. A stale, oversized
 /// or late image is dropped without writing a file.
@@ -1120,115 +1134,142 @@ pub fn drain_screenshots(app: &mut SheetApp, ctx: &egui::Context) {
     let current_viewport = ctx.viewport_id();
     let mut i = 0;
     while i < app.shots.requests.len() {
-        enum Action {
-            Keep,
-            Remove(Json),
-            Restart,
-        }
-        let action = {
-            let r = &mut app.shots.requests[i];
-            // A document or viewport change is a definitive mismatch: cancel once, never retry and
-            // never write the pixels against the new identity.
-            if r.viewport_id != current_viewport {
-                if let Some(slot) = r.slot.take() {
-                    slot.cancel();
-                }
-                Action::Remove(json!({"ok": false, "error": SCREENSHOT_VIEWPORT_CHANGED}))
-            } else if r.document != active_document {
-                if let Some(slot) = r.slot.take() {
-                    slot.cancel();
-                }
-                Action::Remove(json!({"ok": false, "error": SCREENSHOT_DOCUMENT_CHANGED}))
-            } else if !r.issued {
-                if now >= r.deadline {
-                    if let Some(slot) = r.slot.take() {
-                        slot.cancel();
-                    }
-                    let message = if r.expected.is_none() {
-                        "screenshot timeout: the window never reported a capturable size (it may be minimized or not laid out)"
-                    } else {
-                        "no frame was presented before the screenshot timeout"
-                    };
-                    Action::Remove(timeout_reply(message, r.token))
-                } else {
-                    Action::Keep
-                }
-            } else {
-                let taken = r.slot.as_ref().and_then(|slot| slot.take());
-                match taken {
-                    // A completion that arrives past the deadline is late even if the pixels are
-                    // valid: the client was promised one answer within the deadline, so nothing is
-                    // written for it.
-                    Some(result) if now >= r.deadline => {
-                        drop(result);
-                        Action::Remove(timeout_reply("screenshot timeout: the image completed after its deadline; no file was written", r.token))
-                    }
-                    Some(Ok(image)) => {
-                        let validated = match r.expected {
-                            Some(expected) => validate_image(&image, expected),
-                            None => Err("screenshot has no expected size".to_string()),
-                        };
-                        match validated {
-                            Err(_) if r.retries < SCREENSHOT_MAX_RETRIES && now < r.deadline => {
-                                drop(image);
-                                Action::Restart
-                            }
-                            Err(message) => Action::Remove(json!({"ok": false, "error": message})),
-                            Ok(()) if epoch != r.epoch || current_geometry != r.geometry => {
-                                if r.retries < SCREENSHOT_MAX_RETRIES && now < r.deadline {
-                                    drop(image);
-                                    Action::Restart
-                                } else {
-                                    Action::Remove(json!({
-                                        "ok": false,
-                                        "error": "screenshot geometry changed while it was captured; no image was written"
-                                    }))
-                                }
-                            }
-                            Ok(()) => Action::Remove(save_image(image, r.path.as_deref())),
-                        }
-                    }
-                    // The slot refused the image before `validate_image` saw it: an image
-                    // larger than the reservation is as much evidence of a resize as a smaller
-                    // one. Retry within the same bounded budget instead of failing only when the
-                    // window grew. A non-resize fault still exhausts the retries and reports the
-                    // slot's error, so this stays fail-closed.
-                    Some(Err(_)) if r.retries < SCREENSHOT_MAX_RETRIES && now < r.deadline => Action::Restart,
-                    Some(Err(e)) => Action::Remove(json!({"ok": false, "error": e.to_string()})),
-                    None if now >= r.deadline => {
-                        if let Some(slot) = r.slot.take() {
-                            slot.cancel();
-                        }
-                        Action::Remove(timeout_reply("no frame was presented before the screenshot timeout", r.token))
-                    }
-                    None => Action::Keep,
-                }
-            }
-        };
-        match action {
-            Action::Keep => i += 1,
-            Action::Remove(reply) => {
-                let request = app.shots.requests.remove(i);
-                if let Some(slot) = request.slot {
-                    slot.cancel();
-                }
-                let _ = request.reply.send(with_token(reply, request.token));
-            }
-            Action::Restart => match retry_capture(app, i, current_geometry, epoch, now) {
+        match drain_action(app, i, now, current_geometry, epoch, active_document, current_viewport) {
+            DrainAction::Keep => i += 1,
+            DrainAction::Remove(reply) => finish_shot(app, i, reply),
+            DrainAction::Restart => match retry_capture(app, i, current_geometry, epoch, now) {
                 Ok(()) => i += 1,
-                Err(message) => {
-                    let request = app.shots.requests.remove(i);
-                    if let Some(slot) = request.slot {
-                        slot.cancel();
-                    }
-                    reject_shot(request.reply, request.token, message);
-                }
+                Err(message) => reject_shot_at(app, i, message),
             },
         }
     }
     if app.shots.in_flight() {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
+}
+
+/// Validates one request and decides whether it stays queued, is answered or is re-armed.
+fn drain_action(
+    app: &mut SheetApp,
+    i: usize,
+    now: f64,
+    current_geometry: CaptureGeometry,
+    epoch: u64,
+    active_document: Option<u64>,
+    current_viewport: egui::ViewportId,
+) -> DrainAction {
+    let r = &mut app.shots.requests[i];
+    // A document or viewport change is a definitive mismatch: cancel once, never retry and
+    // never write the pixels against the new identity.
+    if r.viewport_id != current_viewport {
+        cancel_shot(r);
+        return DrainAction::Remove(json!({"ok": false, "error": SCREENSHOT_VIEWPORT_CHANGED}));
+    }
+    if r.document != active_document {
+        cancel_shot(r);
+        return DrainAction::Remove(json!({"ok": false, "error": SCREENSHOT_DOCUMENT_CHANGED}));
+    }
+    if !r.issued {
+        return drain_unissued(r, now);
+    }
+    drain_completion(r, now, current_geometry, epoch)
+}
+
+/// A request that never issued a capture: keep waiting, or report the timeout that fits whether
+/// the window ever had a capturable size.
+fn drain_unissued(r: &mut Shot, now: f64) -> DrainAction {
+    if now < r.deadline {
+        return DrainAction::Keep;
+    }
+    cancel_shot(r);
+    let message = if r.expected.is_none() {
+        "screenshot timeout: the window never reported a capturable size (it may be minimized or not laid out)"
+    } else {
+        "no frame was presented before the screenshot timeout"
+    };
+    DrainAction::Remove(timeout_reply(message, r.token))
+}
+
+/// A request that issued a capture: inspect its slot once, then apply the deadline, validation
+/// and geometry checks in the same order as issuance.
+fn drain_completion(r: &mut Shot, now: f64, current_geometry: CaptureGeometry, epoch: u64) -> DrainAction {
+    match r.slot.as_ref().and_then(|slot| slot.take()) {
+        // A completion that arrives past the deadline is late even if the pixels are valid: the
+        // client was promised one answer within the deadline, so nothing is written for it.
+        Some(result) if now >= r.deadline => {
+            drop(result);
+            DrainAction::Remove(timeout_reply("screenshot timeout: the image completed after its deadline; no file was written", r.token))
+        }
+        Some(Ok(image)) => drain_image(r, image, now, current_geometry, epoch),
+        // The slot refused the image before `validate_image` saw it: an image larger than the
+        // reservation is as much evidence of a resize as a smaller one. Retry within the same
+        // bounded budget instead of failing only when the window grew. A non-resize fault still
+        // exhausts the retries and reports the slot's error, so this stays fail-closed.
+        Some(Err(_)) if retry_allowed(r, now) => DrainAction::Restart,
+        Some(Err(e)) => DrainAction::Remove(json!({"ok": false, "error": e.to_string()})),
+        None if now >= r.deadline => {
+            cancel_shot(r);
+            DrainAction::Remove(timeout_reply("no frame was presented before the screenshot timeout", r.token))
+        }
+        None => DrainAction::Keep,
+    }
+}
+
+/// Validates a completed image against the size recorded at issuance and the current
+/// geometry/epoch; only a valid image is saved, and only a retry that is still inside the
+/// request's deadline and retry budget gets a fresh attempt.
+fn drain_image(r: &mut Shot, image: std::sync::Arc<egui::ColorImage>, now: f64, current_geometry: CaptureGeometry, epoch: u64) -> DrainAction {
+    let validated = match r.expected {
+        Some(expected) => validate_image(&image, expected),
+        None => Err("screenshot has no expected size".to_string()),
+    };
+    match validated {
+        Err(_) if retry_allowed(r, now) => {
+            drop(image);
+            DrainAction::Restart
+        }
+        Err(message) => DrainAction::Remove(json!({"ok": false, "error": message})),
+        Ok(()) if epoch != r.epoch || current_geometry != r.geometry => {
+            if !retry_allowed(r, now) {
+                return DrainAction::Remove(json!({
+                    "ok": false,
+                    "error": "screenshot geometry changed while it was captured; no image was written"
+                }));
+            }
+            drop(image);
+            DrainAction::Restart
+        }
+        Ok(()) => DrainAction::Remove(save_image(image, r.path.as_deref())),
+    }
+}
+
+/// Whether this request may take another capture: both limits are fixed for the whole request.
+fn retry_allowed(r: &Shot, now: f64) -> bool {
+    r.retries < SCREENSHOT_MAX_RETRIES && now < r.deadline
+}
+
+fn cancel_shot(r: &mut Shot) {
+    if let Some(slot) = r.slot.take() {
+        slot.cancel();
+    }
+}
+
+/// Remove request `i`, cancel its slot and answer it once with a token-carrying reply.
+fn finish_shot(app: &mut SheetApp, i: usize, reply: Json) {
+    let request = app.shots.requests.remove(i);
+    if let Some(slot) = request.slot {
+        slot.cancel();
+    }
+    let _ = request.reply.send(with_token(reply, request.token));
+}
+
+/// Remove request `i`, cancel its slot and reject it with `message`.
+fn reject_shot_at(app: &mut SheetApp, i: usize, message: impl std::fmt::Display) {
+    let request = app.shots.requests.remove(i);
+    if let Some(slot) = request.slot {
+        slot.cancel();
+    }
+    reject_shot(request.reply, request.token, message);
 }
 
 /// Re-arm one request for a fresh issuance against `geometry`: a new reservation (the maximum
@@ -1238,29 +1279,7 @@ pub fn drain_screenshots(app: &mut SheetApp, ctx: &egui::Context) {
 fn retry_capture(app: &mut SheetApp, i: usize, geometry: CaptureGeometry, epoch: u64, now: f64) -> Result<(), String> {
     let expected = geometry.expected_size();
     let base64 = app.shots.requests.get(i).is_some_and(|r| r.path.is_none());
-    let bytes = match expected {
-        Some(size) => {
-            let bytes = geometry.retained_bytes().ok_or_else(|| "screenshot failed: the window size overflows the screenshot budget".to_string())?;
-            if bytes > SCREENSHOT_MAX_IMAGE_BYTES {
-                return Err(format!(
-                    "screenshot budget exceeded: {bytes} bytes for one {}×{} image, over the {SCREENSHOT_MAX_IMAGE_BYTES}-byte per-image limit",
-                    size[0], size[1]
-                ));
-            }
-            check_encoding_budget(size, base64)?;
-            bytes
-        }
-        None => UNKNOWN_CAPTURE_BYTES,
-    };
-    let others = app.shots.requests.iter().enumerate().filter(|(j, _)| *j != i).fold(0usize, |sum, (_, r)| sum.saturating_add(r.bytes));
-    if others.saturating_add(bytes) > SCREENSHOT_MAX_AGGREGATE_BYTES {
-        return Err(format!(
-            "screenshot budget exceeded: {bytes} bytes for this image would exceed the {SCREENSHOT_MAX_AGGREGATE_BYTES}-byte aggregate limit"
-        ));
-    }
-    if let Some(size) = expected {
-        check_peak_budget(others.saturating_add(bytes), size, base64)?;
-    }
+    let bytes = capture_bytes(app, i, geometry, expected, base64)?;
     let r = &mut app.shots.requests[i];
     r.retries = r.retries.saturating_add(1);
     r.issued = false;
@@ -1922,6 +1941,87 @@ mod tests {
         let _ = ui_pass(&ctx, raw_of(egui::vec2(20.0, 16.0)), |ui| drain_screenshots(&mut app, ui.ctx()));
         let reply = rx.try_recv().expect("the retried capture replies");
         assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(app.shots.reserved(), 0);
+    }
+
+    #[test]
+    fn a_minimize_retry_without_a_size_still_checks_the_aggregate_budget() {
+        let ctx = sized_context(egui::vec2(64.0, 48.0));
+        let mut app = test_app();
+        let mut paths = Vec::new();
+        let mut receivers = Vec::new();
+        for n in 0..SCREENSHOT_MAX_REQUESTS {
+            let path = temp_png(&format!("minimize-retry-{n}"));
+            let (tx, rx) = std::sync::mpsc::channel();
+            // A path capture isolates the retained-image aggregate budget.
+            admit(&mut app, &ctx, Some(path.to_string_lossy().into_owned()), tx);
+            paths.push(path);
+            receivers.push(rx);
+        }
+        for request in &mut app.shots.requests {
+            request.ready_at = 0.0;
+        }
+        let callbacks = issue_with(&ctx, &mut app, egui::RawInput::default());
+        assert_eq!(callbacks.len(), SCREENSHOT_MAX_REQUESTS, "four path captures fit every budget");
+        assert_eq!(app.shots.reserved(), SCREENSHOT_MAX_REQUESTS * 65 * 49 * 4);
+
+        // The window is minimized with every capture outstanding. The drain retries each one
+        // against the new surface generation, which has no capturable size, so every retry
+        // reserves UNKNOWN_CAPTURE_BYTES. Only two unknown-size reservations fit the aggregate
+        // limit; the rest must be reported instead of inflating `reserved()` over the budget.
+        let mut minimized = raw_of(egui::vec2(64.0, 48.0));
+        if let Some(viewport) = minimized.viewports.get_mut(&egui::ViewportId::ROOT) {
+            viewport.inner_rect = None;
+            viewport.minimized = Some(true);
+        }
+        app.raw_input_hook(&ctx, &mut minimized);
+        let image = std::sync::Arc::new(egui::ColorImage::filled([64, 48], egui::Color32::RED));
+        for callback in &callbacks {
+            callback.clone().complete(image.clone());
+        }
+        let _ = ctx.run_logic(&minimized, |ctx| app.logic(ctx));
+
+        assert!(
+            app.shots.reserved() <= SCREENSHOT_MAX_AGGREGATE_BYTES,
+            "size-less retries reserved {} bytes, over the {SCREENSHOT_MAX_AGGREGATE_BYTES}-byte aggregate limit",
+            app.shots.reserved()
+        );
+        let rejected: Vec<Json> = receivers.iter_mut().filter_map(|rx| rx.try_recv().ok()).collect();
+        assert_eq!(rejected.len(), 2, "two unknown-size retries no longer fit the aggregate budget");
+        assert!(rejected.iter().all(|reply| reply["error"].as_str().is_some_and(|e| e.contains("aggregate limit"))), "{rejected:?}");
+        assert_eq!(app.shots.requests.len(), 2, "the two fitting retries stay queued");
+        assert!(app.shots.requests.iter().all(|r| !r.issued && r.expected.is_none() && r.bytes == UNKNOWN_CAPTURE_BYTES));
+        assert!(receivers.iter_mut().all(|rx| rx.try_recv().is_err()), "the surviving retries wait for the restore");
+
+        // Restoring re-issues only the surviving requests at the real size; both fit because the
+        // over-reserved retries were rejected rather than kept.
+        let mut restored = raw_of(egui::vec2(64.0, 48.0));
+        if let Some(viewport) = restored.viewports.get_mut(&egui::ViewportId::ROOT) {
+            viewport.inner_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(64.0, 48.0)));
+            viewport.minimized = Some(false);
+            viewport.occluded = Some(false);
+        }
+        app.raw_input_hook(&ctx, &mut restored);
+        let callbacks = issue_with(&ctx, &mut app, restored.clone());
+        assert_eq!(callbacks.len(), 2, "the surviving requests issue on restore");
+        for callback in &callbacks {
+            callback.clone().complete(image.clone());
+        }
+        let _ = ctx.run_logic(&restored, |ctx| app.logic(ctx));
+
+        let mut delivered = 0;
+        for rx in &mut receivers {
+            if let Ok(reply) = rx.try_recv() {
+                assert_eq!(reply["ok"], true, "{reply}");
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, 2, "the two surviving captures reply once each");
+        let written = paths.iter().filter(|path| path.exists()).count();
+        assert_eq!(written, 2, "only the surviving captures write their image");
+        for path in &paths {
+            let _ = std::fs::remove_file(path);
+        }
         assert_eq!(app.shots.reserved(), 0);
     }
 

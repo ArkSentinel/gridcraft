@@ -703,36 +703,7 @@ fn font_definitions_impl(language: crate::i18n::Language, used: &[String], syste
     let fallback = if system { load_fallback(&mut fonts, HanOrder::of(language)) } else { Vec::new() };
     let hack = fonts.font_data.contains_key(HACK).then_some(HACK);
     for role in [UI, UI_BOLD, CELL, CELL_BOLD, CELL_ITALIC, CELL_BOLD_ITALIC, SERIF, MONO] {
-        let paths = candidates(role);
-        let refs: Vec<(&str, u32)> = paths.iter().map(|(p, i)| (p.as_str(), *i)).collect();
-        let mut chain: Vec<String> = Vec::new();
-        let loaded = if system { try_load(&refs) } else { None };
-        if let Some(mut fd) = loaded {
-            // Helvetica Neue Bold's own TrueType hints close Cyrillic е into ө at 13 pt on a Retina
-            // screen (#1184). Core Text never runs them, so this draws it the way macOS does.
-            if cfg!(target_os = "macos") && role == UI_BOLD {
-                fd.tweak.hinting = Some(false);
-            }
-            let key = format!("sys-{role}");
-            fonts.font_data.insert(key.clone(), Arc::new(fd));
-            chain.push(key);
-        } else if role == UI_BOLD {
-            chain.push(format!("sys-{UI}"));
-        } else if role.starts_with("cell-") {
-            chain.push(format!("sys-{CELL}"));
-        }
-        chain.extend(if role == MONO { base_mono.clone() } else { base_prop.clone() });
-        // egui bundles Hack, a monospace face rich in arrows, triangles and keyboard symbols, but
-        // 0.37 only puts it in the Monospace family. The interface draws ↑, ▲, ▼, ▸, ▾ and ↳ as
-        // text (filter menus, ribbon, keytips), so add it behind the UI/cell and emoji faces; it
-        // only catches characters those do not have.
-        if let Some(hack) = hack
-            && !chain.iter().any(|k| k.as_str() == hack)
-        {
-            chain.push(hack.to_string());
-        }
-        chain.extend(fallback.iter().cloned());
-        chain.retain(|k| fonts.font_data.contains_key(k));
+        let chain = build_role_chain(&mut fonts, role, &base_prop, &base_mono, &fallback, hack, system);
         fonts.families.insert(FontFamily::Name(role.into()), chain);
         bound.push(role.to_string());
     }
@@ -745,17 +716,7 @@ fn font_definitions_impl(language: crate::i18n::Language, used: &[String], syste
     // Interface text (formula bar, name box, dialogs) falls back to the cell font before the
     // script faces: whatever a cell can draw, the formula bar can draw too, even where no script
     // fallback face was found (#349: macOS UI font without Hebrew, cells in Arial with it).
-    let cell_key = format!("sys-{CELL}");
-    if fonts.font_data.contains_key(&cell_key) {
-        for role in [UI, UI_BOLD, SERIF, MONO] {
-            if let Some(chain) = fonts.families.get_mut(&FontFamily::Name(role.into()))
-                && !chain.contains(&cell_key)
-            {
-                let at = chain.iter().position(|k| fallback.contains(k)).unwrap_or(chain.len());
-                chain.insert(at, cell_key.clone());
-            }
-        }
-    }
+    bind_cell_fallback(&mut fonts, &fallback);
     // Default proportional text in widgets uses the UI font.
     if let Some(ui) = fonts.families.get(&FontFamily::Name(UI.into())).cloned() {
         fonts.families.insert(FontFamily::Proportional, ui);
@@ -765,21 +726,90 @@ fn font_definitions_impl(language: crate::i18n::Language, used: &[String], syste
     // symbols the host image lacks (Japanese, Korean, Thai, Arabic, Georgian and the UI symbols).
     // Chinese comes from the native-only OFL LXGW face when embedded; a system Han face still
     // leads, and the barred Noto CJK collection never enters.
-    let craft = add_craft_fonts(&mut fonts);
-    if !craft.is_empty() {
-        for chain in fonts.families.values_mut() {
-            for key in &craft {
-                if !chain.contains(key) {
-                    chain.push(key.clone());
-                }
-            }
-        }
-    }
+    append_craft_faces(&mut fonts);
     drop_unparseable_fonts(&mut fonts);
     // Only families egui still has data for count as bound (a dropped face can empty a chain).
     bound.retain(|f| fonts.families.get(&FontFamily::Name(f.as_str().into())).is_some_and(|c| !c.is_empty()));
     crate::fonts::set_bound(bound);
     fonts
+}
+
+/// Builds one role family's chain: the loaded system face (or its role fallback), egui's bundled
+/// proportional/monospace base, Hack's symbols, then the script fallbacks. Keys without font data
+/// are dropped, as before.
+fn build_role_chain(
+    fonts: &mut FontDefinitions,
+    role: &str,
+    base_prop: &[String],
+    base_mono: &[String],
+    fallback: &[String],
+    hack: Option<&str>,
+    system: bool,
+) -> Vec<String> {
+    let paths = candidates(role);
+    let refs: Vec<(&str, u32)> = paths.iter().map(|(p, i)| (p.as_str(), *i)).collect();
+    let mut chain: Vec<String> = Vec::new();
+    let loaded = if system { try_load(&refs) } else { None };
+    if let Some(mut fd) = loaded {
+        // Helvetica Neue Bold's own TrueType hints close Cyrillic е into ө at 13 pt on a Retina
+        // screen (#1184). Core Text never runs them, so this draws it the way macOS does.
+        if cfg!(target_os = "macos") && role == UI_BOLD {
+            fd.tweak.hinting = Some(false);
+        }
+        let key = format!("sys-{role}");
+        fonts.font_data.insert(key.clone(), Arc::new(fd));
+        chain.push(key);
+    } else if role == UI_BOLD {
+        chain.push(format!("sys-{UI}"));
+    } else if role.starts_with("cell-") {
+        chain.push(format!("sys-{CELL}"));
+    }
+    chain.extend(if role == MONO { base_mono.to_vec() } else { base_prop.to_vec() });
+    // egui bundles Hack, a monospace face rich in arrows, triangles and keyboard symbols, but
+    // 0.37 only puts it in the Monospace family. The interface draws ↑, ▲, ▼, ▸, ▾ and ↳ as
+    // text (filter menus, ribbon, keytips), so add it behind the UI/cell and emoji faces; it
+    // only catches characters those do not have.
+    if let Some(hack) = hack
+        && !chain.iter().any(|k| k.as_str() == hack)
+    {
+        chain.push(hack.to_string());
+    }
+    chain.extend(fallback.iter().cloned());
+    chain.retain(|k| fonts.font_data.contains_key(k));
+    chain
+}
+
+/// Inserts the loaded cell face before the script fallbacks of the interface families, so the
+/// formula bar and dialogs can draw whatever a cell can (#349).
+fn bind_cell_fallback(fonts: &mut FontDefinitions, fallback: &[String]) {
+    let cell_key = format!("sys-{CELL}");
+    if !fonts.font_data.contains_key(&cell_key) {
+        return;
+    }
+    for role in [UI, UI_BOLD, SERIF, MONO] {
+        if let Some(chain) = fonts.families.get_mut(&FontFamily::Name(role.into()))
+            && !chain.contains(&cell_key)
+        {
+            let at = chain.iter().position(|k| fallback.contains(k)).unwrap_or(chain.len());
+            chain.insert(at, cell_key.clone());
+        }
+    }
+}
+
+/// Appends the permitted craft-fonts faces to every family, preserving the leading system or
+/// bundled face's glyph shapes.
+fn append_craft_faces(fonts: &mut FontDefinitions) {
+    let craft = add_craft_fonts(fonts);
+    if craft.is_empty() {
+        return;
+    }
+    for chain in fonts.families.values_mut() {
+        for key in &craft {
+            if !chain.contains(key) {
+                chain.push(key.clone());
+            }
+        }
+    }
 }
 
 /// Loads the system non-Latin fallback faces (one file per script family) and returns their keys so
