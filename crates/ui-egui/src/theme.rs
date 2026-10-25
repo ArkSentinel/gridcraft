@@ -671,10 +671,8 @@ fn thai() -> Vec<(String, u32)> {
         (format!("{mac_sup}/Thonburi.ttc"), 0),
         (format!("{mac_sys}/SukhumvitSet.ttc"), 0),
     ];
-    for d in lin {
-        v.push((format!("{d}/NotoSansThai-Regular.ttf"), 0));
-        v.push((format!("{d}/tlwg/Garuda.ttf"), 0));
-        v.push((format!("{d}/garuda/Garuda.ttf"), 0));
+    for p in in_dirs(&lin, &["NotoSansThai-Regular.ttf", "tlwg/Garuda.ttf", "garuda/Garuda.ttf"]) {
+        v.push((p, 0));
     }
     // Fedora ships the variable Noto Sans Thai; its default instance is Regular.
     v.push(("/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf".into(), 0));
@@ -721,10 +719,8 @@ fn hebrew() -> Vec<(String, u32)> {
         (format!("{mac_sys}/LucidaGrande.ttc"), 0),
         (format!("{mac_sys}/Lucida Grande.ttc"), 0),
     ];
-    for d in lin {
-        v.push((format!("{d}/NotoSansHebrew-Regular.ttf"), 0));
-        v.push((format!("{d}/dejavu/DejaVuSans.ttf"), 0));
-        v.push((format!("{d}/freefont/FreeSans.ttf"), 0));
+    for p in in_dirs(&lin, &["NotoSansHebrew-Regular.ttf", "dejavu/DejaVuSans.ttf", "freefont/FreeSans.ttf"]) {
+        v.push((p, 0));
     }
     v.push(("/usr/share/fonts/google-noto-vf/NotoSansHebrew[wght].ttf".into(), 0));
     v
