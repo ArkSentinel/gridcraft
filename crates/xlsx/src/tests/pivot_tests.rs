@@ -953,3 +953,27 @@ fn a_shared_cache_key_does_not_cross_sources() {
         .collect();
     assert!(ranges.iter().any(|r| r.ends_with("F5")), "the second table's own range is written, got {ranges:?}");
 }
+
+#[test]
+fn a_shared_cache_key_does_not_hide_calculated_fields() {
+    // Same source and key, but the second table has a calculated field the first's cache lacks.
+    // Reusing that cache made `table_xml` drop the value field built on it.
+    let mut wb = workbook();
+    {
+        let sh = wb.sheet_mut(1).unwrap();
+        sh.pivots[1].shared_cache = Some("Shared".into());
+        sh.pivots[1].calculated_fields = vec![];
+        sh.pivots[2].shared_cache = Some("Shared".into());
+        sh.pivots[2].source = sh.pivots[1].source.clone();
+        sh.pivots[2].calculated_fields = vec![PivotCalcField { name: "Margin".into(), formula: "=Sales-Units".into() }];
+        sh.pivots[2].values =
+            vec![PivotValue { source_col: "Margin".into(), func: PivotFunc::Sum, name: "Sum of Margin".into(), ..PivotValue::default() }];
+    }
+    let parts = unzip(&write_xlsx(&wb).unwrap());
+    let caches = parts.keys().filter(|k| k.starts_with("xl/pivotCache/pivotCacheDefinition")).count();
+    assert!(caches >= 3, "the table with its own calculated field gets its own cache, got {caches}");
+    // And its calculated field is written, so the value field is not dropped.
+    let has_margin =
+        parts.iter().filter(|(k, _)| k.starts_with("xl/pivotCache/pivotCacheDefinition")).any(|(_, v)| String::from_utf8_lossy(v).contains("Margin"));
+    assert!(has_margin, "a cache carries the calculated field");
+}

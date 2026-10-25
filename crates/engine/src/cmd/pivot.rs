@@ -1327,6 +1327,7 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
                         | PivotShowAs::PercentOf
                         | PivotShowAs::PercentDifferenceFrom
                         | PivotShowAs::PercentRunningTotalIn
+                        | PivotShowAs::PercentOfParentRowTotal
                 )
             };
             if percent(sa) && !v.number_format.as_deref().is_some_and(|f| f.contains('%')) {
@@ -1603,18 +1604,26 @@ fn group(s: &mut Session, p: &Json) -> Result<Json> {
             if let Some(arr) = p.get("items").and_then(Json::as_array) {
                 let mut groups = Vec::new();
                 for g in arr {
-                    if let Some(obj) = g.as_object() {
-                        let name = obj.get("name").and_then(Json::as_str).map(str::to_string);
-                        if let Some(labels) = obj.get("items").and_then(Json::as_array) {
-                            let mut grp: Vec<String> = labels.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
-                            if let Some(n) = name {
-                                grp.insert(0, n);
-                            }
-                            groups.push(grp);
+                    let grp: Vec<String> = if let Some(obj) = g.as_object() {
+                        let mut grp: Vec<String> = obj
+                            .get("items")
+                            .and_then(Json::as_array)
+                            .map(|labels| labels.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                            .unwrap_or_default();
+                        if let Some(n) = obj.get("name").and_then(Json::as_str) {
+                            grp.insert(0, n.to_string());
                         }
+                        grp
                     } else if let Some(labels) = g.as_array() {
-                        groups.push(labels.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+                        labels.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    // A group with no labels can't group anything, and indexing it would panic.
+                    if grp.is_empty() {
+                        return Err(bad(C, "a text group needs at least one item label"));
                     }
+                    groups.push(grp);
                 }
                 f.grouped_items = groups;
             }
@@ -2193,6 +2202,25 @@ mod tests {
     }
 
     #[test]
+    fn percent_of_parent_row_total_formats_as_a_percentage() {
+        // The mode divides (value / parent), so a source format of "0" would print 0.4 as "0".
+        // It was missing from both the engine's format choice and the command's percent list.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"]})).unwrap();
+        // The value column is formatted "0" in the source, which is what the report would fall back
+        // to: a plain "0" on a ratio of 0.497 prints "0".
+        s.execute("home.numberFormat", json!({"range": "E2:E13", "code": "0"})).unwrap();
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "percentOfParentRowTotal"})).unwrap();
+        assert_eq!(pt(&s).values[0].number_format.as_deref(), Some("0.00%"), "the mode forces a percent format");
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        let c = CellRef::parse("B4").unwrap();
+        assert!(sh.value(c).as_f64().unwrap() < 1.0, "the cell holds a ratio");
+        let shown = crate::display::format(&sh.value(c), d.wb.styles.get(sh.style_id(c)).num_fmt.as_str(), &d.wb).text;
+        assert_eq!(shown, "49.70%", "and shows it as a percentage");
+    }
+
+    #[test]
     fn switching_off_a_percent_mode_drops_its_automatic_format() {
         // The dialog opens on Percentage, the user picks "No Calculation" and presses OK without
         // touching the Number Format controls: a stored 0.00% would print 415 as 41500.00%.
@@ -2318,6 +2346,21 @@ mod tests {
         let after: Vec<String> = labels(&s).into_iter().filter(|x| x != "Row Labels" && x != "Grand Total").collect();
         assert_eq!(after.len(), 1, "only June is on or after May, got {after:?}");
         assert!(!after.iter().any(|x| x.contains("TBD")), "an undateable value is outside the range, got {after:?}");
+    }
+
+    #[test]
+    fn an_empty_text_group_is_refused() {
+        // `items: [[]]` reached the report's grouping code, which indexed g[0] and panicked.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "Sheet1!G3"})).unwrap();
+        let e = s.execute("pivot.group", json!({"field": "Region", "by": "text", "items": [[]]})).unwrap_err();
+        assert!(e.to_string().contains("at least one item"), "{e}");
+        assert!(s.execute("pivot.group", json!({"field": "Region", "by": "text", "items": [{"items": []}]})).is_err());
+        // A group with a name and no labels is a name, not a group of nothing: the label itself is the
+        // item to match, so it is kept.
+        s.execute("pivot.group", json!({"field": "Region", "by": "text", "items": [{"name": "Fruit"}]})).unwrap();
+        // A real group still works.
+        s.execute("pivot.group", json!({"field": "Region", "by": "text", "items": [["Coastal", "East", "West"]]})).unwrap();
     }
 
     #[test]

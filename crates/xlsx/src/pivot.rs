@@ -313,6 +313,7 @@ impl PivotWriter {
             let src = resolve_source(wb, &pt.source, si, 0).map(|(_, _, xml)| xml);
             if let Some((cid, cache_part, cache)) = shared_key.as_ref().and_then(|k| self.shared.get(k))
                 && src.as_deref() == Some(cache.source_xml.as_str())
+                && calc_fields_match(&cache.fields, pt)
                 && let Some(axis_map) = shared_axis_map(&cache.fields, pt)
             {
                 let mut reused_cache = cache.clone();
@@ -454,6 +455,16 @@ fn header_text(v: &Value) -> String {
         Value::Empty => String::new(),
         v => label(v).trim().to_string(),
     }
+}
+
+/// Whether a cache already carries this PivotTable's calculated fields (name and formula). A value
+/// field built on a calculated field is dropped by `table_xml` when the reused cache lacks it.
+fn calc_fields_match(fields: &[CField], pt: &PivotTable) -> bool {
+    pt.calculated_fields.iter().all(|cf| {
+        let f = cf.formula.trim();
+        let f = f.strip_prefix('=').unwrap_or(f).trim();
+        fields.iter().any(|x| x.formula.as_deref().is_some_and(|xf| same(&x.name, &cf.name) && xf == f))
+    })
 }
 
 /// Maps this PivotTable's axis fields onto an existing cache's fields, or `None` when the cache

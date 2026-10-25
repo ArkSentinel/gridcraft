@@ -291,11 +291,13 @@ fn grouped_label_of(bins: Option<(f64, f64)>, groups: &[Vec<String>], v: &Value)
     // Manual text grouping: map an item into its group label.
     if let Value::Text(t) = v {
         for g in groups {
+            // An empty group has no name and no items; imported settings can carry one.
+            let Some(first) = g.first() else { continue };
             let (name, items) = if g.len() > 1 && g[1..].iter().any(|x| x.eq_ignore_ascii_case(t)) {
-                (g[0].clone(), &g[1..])
+                (first.clone(), &g[1..])
             } else {
                 // no explicit name: group named after its first item
-                (g[0].clone(), &g[..])
+                (first.clone(), &g[..])
             };
             if items.iter().any(|x| x.eq_ignore_ascii_case(t)) {
                 return Some((format!("g{}", name.to_lowercase()), name, 1, 0.0));
@@ -1037,7 +1039,7 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     // ---- value filters: per-item aggregates, then the allowed sets. Items are interned only in
     // the main pass below, where `first` records the source order the report sorts by.
     // First pass: per-item aggregates for value-filtered fields.
-    let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, f64>> = std::collections::HashMap::new();
+    let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, Acc>> = std::collections::HashMap::new();
     for rec in &src.rows {
         let mut skip = false;
         for (c, f, pf, _) in &filters {
@@ -1065,21 +1067,11 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             } else {
                 0
             };
-            let valnum = if vi < vals.len() {
-                // find source col for value field
-                match &vals[vi].0 {
-                    ValSrc::Col(cc) => rec.get(*cc).unwrap_or(&Value::Empty).as_f64().unwrap_or(0.0),
-                    _ => 0.0,
-                }
-            } else {
-                0.0
-            };
-            item_agg.entry(f.source_col.clone()).or_default().entry(label.clone()).or_insert(0.0);
-            if let Some(m) = item_agg.get_mut(&f.source_col)
-                && let Some(x) = m.get_mut(&label)
-            {
-                *x += valnum;
-            }
+            // Measure the item with the value field's own summary function, not a raw sum: a
+            // "Count of Region" filter on a text column would otherwise see 0 for every item.
+            let Some(ValSrc::Col(cc)) = vals.get(vi).map(|(vs, _)| vs) else { continue };
+            let acc = item_agg.entry(f.source_col.clone()).or_default().entry(label.clone()).or_default();
+            acc.add(rec.get(*cc).unwrap_or(&Value::Empty));
         }
     }
     // Determine allowed sets.
@@ -1089,7 +1081,13 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             continue;
         };
         let agg = item_agg.get(&f.source_col).cloned().unwrap_or_default();
-        let mut items: Vec<(String, f64)> = agg.into_iter().collect();
+        let vi = if let Some(bf) = &vf.by_field {
+            vals.iter().position(|(_, v)| v.name.eq_ignore_ascii_case(bf) || v.source_col.eq_ignore_ascii_case(bf)).unwrap_or(0)
+        } else {
+            0
+        };
+        let func = vals.get(vi).map(|(_, v)| v.func).unwrap_or_default();
+        let mut items: Vec<(String, f64)> = agg.into_iter().map(|(label, acc)| (label, acc.result(func).as_f64().unwrap_or(0.0))).collect();
         // sort
         if vf.bottom {
             items.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -1567,7 +1565,8 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             | PivotShowAs::PercentOfRowTotal
             | PivotShowAs::PercentOf
             | PivotShowAs::PercentDifferenceFrom
-            | PivotShowAs::PercentRunningTotalIn => Some(match &v.number_format {
+            | PivotShowAs::PercentRunningTotalIn
+            | PivotShowAs::PercentOfParentRowTotal => Some(match &v.number_format {
                 // A percent mode always shows a percent: an explicit format without `%` would
                 // print a ratio as a plain number (Excel switches the format to percentage).
                 Some(f) if f.contains('%') => f.clone(),

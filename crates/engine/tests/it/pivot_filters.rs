@@ -101,3 +101,31 @@ fn a_label_filter_and_a_value_filter_stay_independent() {
     s.execute("pivot.filter", json!({"field": "Region", "bottomN": 1})).unwrap();
     assert_eq!(items(&s), vec!["West"], "the value filter applies within the selected labels");
 }
+
+/// A report counting a text column, so `Count` and a raw sum differ sharply.
+fn counting() -> Session {
+    let mut s = Session::new();
+    s.new_workbook();
+    // East 3 records, West 2, North 1.
+    let rows = json!([["Region", "Rep"], ["East", "a"], ["East", "b"], ["East", "c"], ["West", "d"], ["West", "e"], ["North", "f"],]);
+    s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+    s.execute("selection.set", json!({"range": "A1"})).unwrap();
+    s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": [{"field": "Rep", "func": "count"}], "destination": "Sheet1!D3"})).unwrap();
+    s
+}
+
+#[test]
+fn a_value_filter_ranks_by_the_summary_function() {
+    // The filter used to sum the raw source value, and a text column sums to 0: every region tied at
+    // zero and Top 1 kept them all. With Count it must keep the region with the most records.
+    let mut s = counting();
+    assert_eq!(items(&s), vec!["East", "North", "West"]);
+    s.execute("pivot.filter", json!({"field": "Region", "topN": 1})).unwrap();
+    assert_eq!(items(&s), vec!["East"], "East has the most records");
+    clear(&mut s);
+    s.execute("pivot.filter", json!({"field": "Region", "bottomN": 1})).unwrap();
+    assert_eq!(items(&s), vec!["North"], "North has the fewest");
+    clear(&mut s);
+    s.execute("pivot.filter", json!({"field": "Region", "above": 2.0})).unwrap();
+    assert_eq!(items(&s), vec!["East"], "only East has more than two records");
+}
