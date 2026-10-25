@@ -353,7 +353,7 @@ fn new_tiles(app: &mut SheetApp, ui: &mut Ui, out: &mut Outcome) {
 fn split_path(path: &str) -> (String, String) {
     let p = std::path::Path::new(path);
     let name = p.file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(path).to_string();
-    let folder = p.parent().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_string();
+    let folder = p.parent().and_then(std::path::Path::to_str).unwrap_or("").to_string();
     (name, folder)
 }
 

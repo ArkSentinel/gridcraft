@@ -13,7 +13,7 @@ pub use gridcraft_core::quote_sheet;
 use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, split_sheet};
 use gridcraft_model::{
     BorderLine, BorderStyle, Cell, Chart, Color, Fill, HAlign, NumFmt, PivotDateGroup, PivotField, PivotFilter, PivotFunc, PivotLayout, PivotShowAs,
-    PivotSort, PivotTable, PivotValue, Series, Style, StyleId, Theme, Workbook,
+    PivotSort, PivotTable, PivotValue, Series, Style, StyleId, Workbook,
 };
 
 use crate::pivot_calc::CalcSet;
