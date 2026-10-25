@@ -1191,6 +1191,20 @@ fn pt_settings_xml(pt: &PivotTable) -> String {
         let _ =
             write!(body, "<gc:calculatedItem field=\"{}\" name=\"{}\" formula=\"{}\"/>", esc_attr(&c.field), esc_attr(&c.name), esc_attr(&c.formula));
     }
+    // Label selections, including an explicit empty one (a timeline outside every date). OOXML
+    // hides items per field and refuses to hide them all, so that state has nowhere else to go.
+    for f in pt.filters.iter().filter(|f| f.selected.is_some()) {
+        let Some(sel) = f.selected.as_ref() else { continue };
+        let _ = write!(body, "<gc:selection field=\"{}\"", esc_attr(&f.source_col));
+        if sel.is_empty() {
+            body.push_str(" empty=\"1\"");
+        }
+        body.push('>');
+        for label in sel {
+            let _ = write!(body, "<gc:item v=\"{}\"/>", esc_attr(label));
+        }
+        body.push_str("</gc:selection>");
+    }
     // A value field's own settings that OOXML's `<dataField>` cannot express: its base for
     // Difference From / % Difference From (GridCraft's base is another *value* field, not an axis
     // field index) and its error/empty replacement text. The standard attributes on `<dataField>`
@@ -1510,6 +1524,16 @@ fn read_settings(e: &El, pt: &mut PivotTable, filters: &mut Vec<PivotFilter>) {
         match filters.iter_mut().find(|f| same(&f.source_col, field)) {
             Some(f) => f.value_filter = Some(vf),
             None => filters.push(PivotFilter { source_col: field.to_string(), selected: None, value_filter: Some(vf) }),
+        }
+    }
+    // Label selections (an empty one is a timeline that matched no date).
+    for s in e.kids("selection") {
+        let Some(field) = s.attr("field") else { continue };
+        let labels: Vec<String> = s.kids("item").filter_map(|i| i.attr("v").map(str::to_string)).collect();
+        let selected = Some(labels);
+        match filters.iter_mut().find(|f| same(&f.source_col, field)) {
+            Some(f) => f.selected = selected,
+            None => filters.push(PivotFilter { source_col: field.to_string(), selected, value_filter: None }),
         }
     }
 }

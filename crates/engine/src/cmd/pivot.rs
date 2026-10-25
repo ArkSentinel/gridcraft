@@ -2364,6 +2364,19 @@ mod tests {
     }
 
     #[test]
+    fn a_value_filter_can_measure_a_calculated_field() {
+        // The filter pass skipped calculated fields, so `byField` on one measured every item as 0
+        // and Top N removed the whole report.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "Sheet1!G3"})).unwrap();
+        s.execute("pivot.calculatedField", json!({"name": "Double", "formula": "=Sales*2"})).unwrap();
+        s.execute("pivot.filter", json!({"field": "Region", "topN": 1, "byField": "Double"})).unwrap();
+        let l = labels(&s);
+        assert_eq!(l[1], "East", "East has the biggest Sales, so the biggest Double, got {l:?}");
+        assert!(!l.iter().any(|x| x == "North"), "the smaller regions are filtered out, got {l:?}");
+    }
+
+    #[test]
     fn a_value_filter_matching_nothing_leaves_the_report_empty() {
         // An "above every aggregate" filter used to refill its allowed set with every item, so the
         // filter silently did nothing.

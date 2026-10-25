@@ -458,7 +458,7 @@ fn build_tree(
     depth: usize,
     fields: &[&PivotField],
     items: &[FieldItems],
-    sort_keys: &[Option<std::collections::HashMap<(Vec<u32>, u32), f64>>],
+    sort_keys: &[Option<(PivotFunc, std::collections::HashMap<(Vec<u32>, u32), Acc>)>],
 ) -> Vec<Node> {
     let (Some(field), Some(fi)) = (fields.get(depth), items.get(depth)) else { return vec![] };
     let mut order: Vec<u32> = Vec::new();
@@ -488,9 +488,9 @@ fn build_tree(
             return pos(a.item).cmp(&pos(b.item));
         }
         // Sort by another value field's aggregate when requested.
-        if let Some(Some(map)) = sort_keys.get(depth) {
-            let ka = map.get(&(prefix.clone(), a.item)).copied().unwrap_or(0.0);
-            let kb = map.get(&(prefix.clone(), b.item)).copied().unwrap_or(0.0);
+        if let Some(Some((func, map))) = sort_keys.get(depth) {
+            let ka = map.get(&(prefix.clone(), a.item)).and_then(|acc| acc.result(*func).as_f64()).unwrap_or(0.0);
+            let kb = map.get(&(prefix.clone(), b.item)).and_then(|acc| acc.result(*func).as_f64()).unwrap_or(0.0);
             let r = match field.sort {
                 PivotSort::Desc => kb.total_cmp(&ka),
                 _ => ka.total_cmp(&kb),
@@ -876,6 +876,14 @@ fn flatten_cols(
 
 type AggMap = HashMap<(Vec<u32>, Vec<u32>), Vec<Acc>>;
 
+/// One filter item's measurement: the value field's own accumulator, plus the source-column
+/// accumulators a calculated field is evaluated on.
+#[derive(Default, Clone)]
+struct ItemMeasure {
+    primary: Option<Acc>,
+    extras: Vec<Acc>,
+}
+
 /// Where a value field's numbers come from.
 #[derive(Clone, Copy)]
 enum ValSrc {
@@ -1039,7 +1047,7 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     // ---- value filters: per-item aggregates, then the allowed sets. Items are interned only in
     // the main pass below, where `first` records the source order the report sorts by.
     // First pass: per-item aggregates for value-filtered fields.
-    let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, Acc>> = std::collections::HashMap::new();
+    let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, ItemMeasure>> = std::collections::HashMap::new();
     for rec in &src.rows {
         let mut skip = false;
         for (c, f, pf, _) in &filters {
@@ -1069,9 +1077,21 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             };
             // Measure the item with the value field's own summary function, not a raw sum: a
             // "Count of Region" filter on a text column would otherwise see 0 for every item.
-            let Some(ValSrc::Col(cc)) = vals.get(vi).map(|(vs, _)| vs) else { continue };
-            let acc = item_agg.entry(f.source_col.clone()).or_default().entry(label.clone()).or_default();
-            acc.add(rec.get(*cc).unwrap_or(&Value::Empty));
+            // A calculated field is measured as the report measures it: sums of its source
+            // columns, then the formula.
+            let Some((vs, _)) = vals.get(vi) else { continue };
+            let m = item_agg.entry(f.source_col.clone()).or_default().entry(label.clone()).or_default();
+            match vs {
+                ValSrc::Col(cc) => m.primary.get_or_insert_with(Acc::default).add(rec.get(*cc).unwrap_or(&Value::Empty)),
+                ValSrc::Calc(_) => {
+                    if m.extras.len() < extra.len() {
+                        m.extras.resize_with(extra.len(), Acc::default);
+                    }
+                    for (acc, c) in m.extras.iter_mut().zip(extra.iter()) {
+                        acc.add(rec.get(*c).unwrap_or(&Value::Empty));
+                    }
+                }
+            }
         }
     }
     // Determine allowed sets.
@@ -1087,7 +1107,25 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             0
         };
         let func = vals.get(vi).map(|(_, v)| v.func).unwrap_or_default();
-        let mut items: Vec<(String, f64)> = agg.into_iter().map(|(label, acc)| (label, acc.result(func).as_f64().unwrap_or(0.0))).collect();
+        let mut items: Vec<(String, f64)> = agg
+            .into_iter()
+            .map(|(label, m)| {
+                let measured = match vals.get(vi).map(|(vs, _)| vs) {
+                    Some(ValSrc::Calc(i)) => {
+                        let sum = |name: &str| -> Value {
+                            src.col(name)
+                                .and_then(|c| extra.iter().position(|x| *x == c))
+                                .and_then(|j| m.extras.get(j))
+                                .map(|a| a.result(PivotFunc::Sum))
+                                .unwrap_or(Value::Number(0.0))
+                        };
+                        calc.value(wb, *i, &sum)
+                    }
+                    _ => m.primary.map(|a| a.result(func)).unwrap_or(Value::Number(0.0)),
+                };
+                (label, measured.as_f64().unwrap_or(0.0))
+            })
+            .collect();
         // sort
         if vf.bottom {
             items.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -1148,24 +1186,29 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
         allowed.insert(f.source_col.clone(), set);
     }
 
-    // Sort-by-value: resolve each axis field's `sort_by` to a source column and seed an
-    // aggregate map keyed by (prefix, item) -> sum. shortcut: aggregates are raw sums, which
-    // matches the default Sum function; calculated-value fields are skipped.
-    let resolve_sort_col = |name: &str| -> Option<usize> {
-        if let Some(c) = src.col(name) {
-            return Some(c);
+    // Sort-by-value: resolve each axis field's `sort_by` to a source column plus the summary
+    // function to measure it with, and seed an aggregate map keyed by (prefix, item). A name that
+    // matches a configured value field uses that field's function; a bare source column sums.
+    // shortcut: calculated-value fields are skipped.
+    let sort_key = |selector: &str| -> Option<(usize, PivotFunc)> {
+        let configured = vals
+            .iter()
+            .find(|(_, v)| v.name.eq_ignore_ascii_case(selector))
+            .or_else(|| vals.iter().find(|(_, v)| v.source_col.eq_ignore_ascii_case(selector)));
+        if let Some((vs, v)) = configured {
+            return match vs {
+                ValSrc::Col(c) => Some((*c, v.func)),
+                ValSrc::Calc(_) => None,
+            };
         }
-        vals.iter().find(|(_, v)| v.source_col.eq_ignore_ascii_case(name)).and_then(|(vs, _)| match vs {
-            ValSrc::Col(c) => Some(*c),
-            _ => None,
-        })
+        src.col(selector).map(|c| (c, PivotFunc::Sum))
     };
-    let row_sort_cols: Vec<Option<usize>> = rows.iter().map(|(_, f)| f.sort_by.as_deref().and_then(resolve_sort_col)).collect();
-    let col_sort_cols: Vec<Option<usize>> = cols.iter().map(|(_, f)| f.sort_by.as_deref().and_then(resolve_sort_col)).collect();
-    let mut row_sort_keys: Vec<Option<std::collections::HashMap<(Vec<u32>, u32), f64>>> =
-        row_sort_cols.iter().map(|c| c.map(|_| std::collections::HashMap::new())).collect();
-    let mut col_sort_keys: Vec<Option<std::collections::HashMap<(Vec<u32>, u32), f64>>> =
-        col_sort_cols.iter().map(|c| c.map(|_| std::collections::HashMap::new())).collect();
+    let row_sort_cols: Vec<Option<(usize, PivotFunc)>> = rows.iter().map(|(_, f)| f.sort_by.as_deref().and_then(sort_key)).collect();
+    let col_sort_cols: Vec<Option<(usize, PivotFunc)>> = cols.iter().map(|(_, f)| f.sort_by.as_deref().and_then(sort_key)).collect();
+    let mut row_sort_keys: Vec<Option<(PivotFunc, std::collections::HashMap<(Vec<u32>, u32), Acc>)>> =
+        row_sort_cols.iter().map(|s| s.map(|(_, func)| (func, std::collections::HashMap::new()))).collect();
+    let mut col_sort_keys: Vec<Option<(PivotFunc, std::collections::HashMap<(Vec<u32>, u32), Acc>)>> =
+        col_sort_cols.iter().map(|s| s.map(|(_, func)| (func, std::collections::HashMap::new()))).collect();
 
     'rec: for (ri, rec) in src.rows.iter().enumerate() {
         for ((c, f, pf, _), fmt) in filters.iter().zip(filter_fmts.iter()) {
@@ -1207,28 +1250,18 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             }
         }
         // Accumulate sort-by-value aggregates per (prefix, item).
-        for (i, col) in row_sort_cols.iter().enumerate() {
-            if let Some(c) = *col
-                && let Some(entry) = row_sort_keys[i].as_mut()
+        for (i, sort) in row_sort_cols.iter().enumerate() {
+            if let Some((c, _)) = sort
+                && let Some((_, entry)) = row_sort_keys[i].as_mut()
             {
-                let val = match rec.get(c) {
-                    Some(Value::Number(n)) => *n,
-                    Some(Value::Text(t)) => t.parse().unwrap_or(0.0),
-                    _ => 0.0,
-                };
-                entry.entry((rp[..i].to_vec(), rp[i])).and_modify(|x| *x += val).or_insert(val);
+                entry.entry((rp[..i].to_vec(), rp[i])).or_default().add(rec.get(*c).unwrap_or(&Value::Empty));
             }
         }
-        for (i, col) in col_sort_cols.iter().enumerate() {
-            if let Some(c) = *col
-                && let Some(entry) = col_sort_keys[i].as_mut()
+        for (i, sort) in col_sort_cols.iter().enumerate() {
+            if let Some((c, _)) = sort
+                && let Some((_, entry)) = col_sort_keys[i].as_mut()
             {
-                let val = match rec.get(c) {
-                    Some(Value::Number(n)) => *n,
-                    Some(Value::Text(t)) => t.parse().unwrap_or(0.0),
-                    _ => 0.0,
-                };
-                entry.entry((cp[..i].to_vec(), cp[i])).and_modify(|x| *x += val).or_insert(val);
+                entry.entry((cp[..i].to_vec(), cp[i])).or_default().add(rec.get(*c).unwrap_or(&Value::Empty));
             }
         }
 
@@ -1572,7 +1605,8 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                 Some(f) if f.contains('%') => f.clone(),
                 _ => "0.00%".into(),
             }),
-            PivotShowAs::Rank => v.number_format.clone(),
+            // Ranks are whole numbers: neither mode may inherit the source's currency/decimals.
+            PivotShowAs::Rank | PivotShowAs::RankAscending => v.number_format.clone(),
             _ => v.number_format.clone().or_else(|| match v.func {
                 PivotFunc::Count | PivotFunc::CountNumbers => None,
                 _ => {

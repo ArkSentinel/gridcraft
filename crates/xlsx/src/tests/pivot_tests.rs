@@ -977,3 +977,30 @@ fn a_shared_cache_key_does_not_hide_calculated_fields() {
         parts.iter().filter(|(k, _)| k.starts_with("xl/pivotCache/pivotCacheDefinition")).any(|(_, v)| String::from_utf8_lossy(v).contains("Margin"));
     assert!(has_margin, "a cache carries the calculated field");
 }
+
+#[test]
+fn an_empty_timeline_selection_survives_the_round_trip() {
+    // `pivot.timeline` stores "no date in range" as Some(empty). OOXML hides items per field and
+    // refuses to hide them all, so the writer used to reset that to "all visible" and reopening
+    // lost the filter.
+    let mut wb = workbook();
+    {
+        let pt = &mut wb.sheet_mut(1).unwrap().pivots[1];
+        pt.filters = vec![PivotFilter { source_col: "Product".into(), selected: Some(Vec::new()), value_filter: None }];
+    }
+    let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
+    let f = back.sheet(1).unwrap().pivots[1].filters.iter().find(|f| f.source_col == "Product").expect("the filter survives");
+    assert_eq!(f.selected.as_deref(), Some(&[][..]), "an explicit empty selection stays empty, not None");
+}
+
+#[test]
+fn a_label_selection_survives_the_round_trip() {
+    let mut wb = workbook();
+    {
+        let pt = &mut wb.sheet_mut(1).unwrap().pivots[1];
+        pt.filters = vec![PivotFilter { source_col: "Product".into(), selected: Some(vec!["A".into(), "C".into()]), value_filter: None }];
+    }
+    let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
+    let f = back.sheet(1).unwrap().pivots[1].filters.iter().find(|f| f.source_col == "Product").expect("the filter survives");
+    assert_eq!(f.selected.as_deref(), Some(&["A".to_string(), "C".to_string()][..]));
+}
