@@ -1,24 +1,12 @@
 //! Advanced Filter's dialog must route both actions to the same engine command.
 
-use egui::vec2;
 use egui_kittest::kittest::Queryable;
-use gridcraft_engine::Session;
 use gridcraft_ui_egui::SheetApp;
 use gridcraft_ui_egui::control::{Outcome, handle};
 use serde_json::{Value as Json, json};
 
 fn harness() -> egui_kittest::Harness<'static, SheetApp> {
-    let mut session = Session::new();
-    session.new_workbook();
-    let mut h = crate::common::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        crate::common::app(session),
-    );
-    h.run_steps(6);
-    h
+    crate::support::blank_harness(6)
 }
 
 fn control(h: &mut egui_kittest::Harness<'static, SheetApp>, method: &str, params: Json) -> Json {

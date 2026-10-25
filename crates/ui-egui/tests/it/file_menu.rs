@@ -3,23 +3,12 @@
 use std::sync::{Arc, Mutex};
 
 use egui_kittest::kittest::Queryable as _;
-use gridcraft_engine::{Session, core::CellRef, core::Value};
+use gridcraft_engine::{core::CellRef, core::Value};
 use gridcraft_ui_egui::i18n::Language;
 use gridcraft_ui_egui::{Services, SheetApp};
 
 fn harness(services: Services) -> egui_kittest::Harness<'static, SheetApp> {
-    let mut session = Session::new();
-    session.new_workbook();
-    let mut h = crate::common::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        crate::common::prepare(SheetApp::new(session, services)),
-    );
-    h.run_steps(4);
-    h
+    crate::support::services_harness(services, 4)
 }
 
 /// Opens File (the Backstage view) and clicks a navigation entry or page button.

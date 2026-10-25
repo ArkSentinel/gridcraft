@@ -6,16 +6,7 @@ use gridcraft_engine::core::CellRef;
 use gridcraft_ui_egui::SheetApp;
 
 fn harness(session: Session) -> egui_kittest::Harness<'static, SheetApp> {
-    let mut h = crate::common::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        crate::common::app(session),
-    );
-    h.run_steps(4);
-    h
+    crate::support::harness(session, 4)
 }
 
 fn blank() -> Session {

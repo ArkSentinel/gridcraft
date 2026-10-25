@@ -18,15 +18,7 @@ fn harness(session: Session) -> Harness {
 }
 
 fn harness_on(session: Session, os: OperatingSystem) -> Harness {
-    let mut h = crate::common::builder().with_os(os).with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            app.logic(ui.ctx());
-            app.ui(ui);
-        },
-        crate::common::app(session),
-    );
-    h.run_steps(4);
-    h
+    crate::common::os_harness(session, os)
 }
 
 fn blank() -> Session {

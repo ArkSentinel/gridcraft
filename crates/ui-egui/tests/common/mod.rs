@@ -12,6 +12,8 @@ use egui_kittest::HarnessBuilder;
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Services, SheetApp};
 
+pub type Harness = egui_kittest::Harness<'static, SheetApp>;
+
 /// A kittest builder with the deterministic font set and GridCraft's visuals installed.
 pub fn builder<State>() -> HarnessBuilder<State> {
     egui_kittest::Harness::builder().with_context_setup(|ctx| {
@@ -29,4 +31,27 @@ pub fn app(session: Session) -> SheetApp {
 pub fn prepare(mut app: SheetApp) -> SheetApp {
     app.use_prepared_fonts();
     app
+}
+
+/// Drive `app`'s `logic` then `ui` each frame in a harness built with `builder`.
+///
+/// Tests that need a non-standard size, step timing, OS or pixel ratio configure the builder
+/// here so those details stay explicit; the shared font and lifecycle setup lives in `builder`
+/// and `app`.
+pub fn harness_with(builder: HarnessBuilder<SheetApp>, app: SheetApp, steps: usize) -> Harness {
+    let mut h = builder.build_ui_state(
+        |ui, app: &mut SheetApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(steps);
+    h
+}
+
+/// A 1200×800 harness that reports `os` to egui, for platform-specific input.
+pub fn os_harness(session: Session, os: egui::os::OperatingSystem) -> Harness {
+    harness_with(builder().with_os(os).with_size(egui::vec2(1200.0, 800.0)), app(session), 4)
 }

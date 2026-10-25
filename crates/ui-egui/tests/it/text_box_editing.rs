@@ -22,16 +22,11 @@ fn fixture() -> (Harness, u32) {
     session.execute("selection.set", json!({"cell": "B2"})).unwrap();
     let id = session.execute("insert.textBox", json!({"at": "B2", "width": 240, "height": 120, "text": ORIGINAL})).unwrap()["shape"].as_u64().unwrap()
         as u32;
-    let mut h =
-        crate::common::builder().with_size(vec2(1200.0, 800.0)).with_step_dt(1.0 / 60.0).with_os(egui::os::OperatingSystem::Mac).build_ui_state(
-            |ui, app: &mut SheetApp| {
-                let ctx = ui.ctx().clone();
-                app.logic(&ctx);
-                app.ui(ui);
-            },
-            crate::common::app(session),
-        );
-    h.run_steps(4);
+    let h = crate::common::harness_with(
+        crate::common::builder().with_size(vec2(1200.0, 800.0)).with_step_dt(1.0 / 60.0).with_os(egui::os::OperatingSystem::Mac),
+        crate::common::app(session),
+        4,
+    );
     (h, id)
 }
 

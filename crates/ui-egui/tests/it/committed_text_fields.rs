@@ -1,6 +1,6 @@
 //! Text fields over workbook values (chart titles, table name) keep what the user types until they commit it.
 
-use egui::{Event, Key, Modifiers, accesskit::Role, vec2};
+use egui::{Event, Key, Modifiers, accesskit::Role};
 use egui_kittest::kittest::Queryable as _;
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::SheetApp;
@@ -9,16 +9,7 @@ use serde_json::json;
 type Harness = egui_kittest::Harness<'static, SheetApp>;
 
 fn harness(session: Session) -> Harness {
-    let mut h = crate::common::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        crate::common::app(session),
-    );
-    h.run_steps(4);
-    h
+    crate::support::harness(session, 4)
 }
 
 fn session() -> Session {

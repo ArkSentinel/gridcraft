@@ -2,7 +2,6 @@
 //! The tab remembered in the saved UI state, or left behind when the selection moves away, must
 //! not leave the ribbon blank: it falls back to Home.
 
-use egui::vec2;
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
@@ -10,16 +9,7 @@ use serde_json::json;
 type Harness = egui_kittest::Harness<'static, SheetApp>;
 
 fn harness(session: Session) -> Harness {
-    let mut h = crate::common::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        crate::common::app(session),
-    );
-    h.run_steps(4);
-    h
+    crate::support::harness(session, 4)
 }
 
 fn session_with_table() -> Session {
@@ -34,16 +24,7 @@ fn session_with_table() -> Session {
 fn app_restored_on(tab: &str, session: Session) -> Harness {
     let mut app = crate::common::app(session);
     app.ui.ribbon_tab = tab.into();
-    let mut h = crate::common::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
-        |ui, app: &mut SheetApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
-    h.run_steps(4);
-    h
+    crate::support::app_harness(app, 4)
 }
 
 #[test]
