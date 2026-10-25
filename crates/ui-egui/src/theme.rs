@@ -301,6 +301,12 @@ fn home_fonts(file: &str) -> String {
     format!("{home}/Library/Fonts/{file}")
 }
 
+/// Every file in `files` under every directory in `dirs`, directory first, in the same order a
+/// nested loop over the directories would add them.
+fn in_dirs(dirs: &[&str], files: &[&str]) -> Vec<String> {
+    dirs.iter().flat_map(|d| files.iter().map(move |f| format!("{d}/{f}"))).collect()
+}
+
 /// Candidate font files per role, in preference order.
 fn candidates(role: &str) -> Vec<(String, u32)> {
     let mac_sys = "/System/Library/Fonts";
@@ -315,11 +321,11 @@ fn candidates(role: &str) -> Vec<(String, u32)> {
             add(format!("{mac_sys}/SFNS.ttf"), 0);
             add(format!("{mac_sys}/HelveticaNeue.ttc"), 0);
             add(format!("{win}\\segoeui.ttf"), 0);
-            for d in lin {
-                add(format!("{d}/cantarell/Cantarell-Regular.otf"), 0);
-                add(format!("{d}/noto/NotoSans-Regular.ttf"), 0);
-                add(format!("{d}/dejavu/DejaVuSans.ttf"), 0);
-                add(format!("{d}/liberation/LiberationSans-Regular.ttf"), 0);
+            for p in in_dirs(
+                &lin,
+                &["cantarell/Cantarell-Regular.otf", "noto/NotoSans-Regular.ttf", "dejavu/DejaVuSans.ttf", "liberation/LiberationSans-Regular.ttf"],
+            ) {
+                add(p, 0);
             }
             // Fedora keeps each family in its own package folder (#54).
             add("/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf".into(), 0);
@@ -330,10 +336,8 @@ fn candidates(role: &str) -> Vec<(String, u32)> {
         "ui-bold" => {
             add(format!("{mac_sys}/HelveticaNeue.ttc"), 1);
             add(format!("{win}\\segoeuib.ttf"), 0);
-            for d in lin {
-                add(format!("{d}/noto/NotoSans-Bold.ttf"), 0);
-                add(format!("{d}/dejavu/DejaVuSans-Bold.ttf"), 0);
-                add(format!("{d}/liberation/LiberationSans-Bold.ttf"), 0);
+            for p in in_dirs(&lin, &["noto/NotoSans-Bold.ttf", "dejavu/DejaVuSans-Bold.ttf", "liberation/LiberationSans-Bold.ttf"]) {
+                add(p, 0);
             }
             add("/usr/share/fonts/google-noto/NotoSans-Bold.ttf".into(), 0);
             add("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf".into(), 0);
@@ -376,18 +380,16 @@ fn candidates(role: &str) -> Vec<(String, u32)> {
             add(format!("/Library/Fonts/{calibri_mac}"), 0);
             add(home_fonts(calibri_mac), 0);
             add(format!("{win}\\{calibri_win}"), 0);
-            for d in lin {
-                add(format!("{d}/crosextra/{carlito}"), 0);
-                add(format!("{d}/carlito/{carlito}"), 0);
+            for p in in_dirs(&lin, &[&format!("crosextra/{carlito}"), &format!("carlito/{carlito}")]) {
+                add(p, 0);
             }
             // Fedora keeps each family in its own package folder, as for the UI fonts (#54).
             add(format!("/usr/share/fonts/google-carlito-fonts/{carlito}"), 0);
             add(home_fonts(carlito), 0);
             add(format!("{mac_sup}/{arial_mac}"), 0);
             add(format!("{win}\\{arial_win}"), 0);
-            for d in lin {
-                add(format!("{d}/liberation/{lib}"), 0);
-                add(format!("{d}/dejavu/{dejavu}"), 0);
+            for p in in_dirs(&lin, &[&format!("liberation/{lib}"), &format!("dejavu/{dejavu}")]) {
+                add(p, 0);
             }
             add(format!("/usr/share/fonts/liberation-sans-fonts/{lib}"), 0);
             add(format!("/usr/share/fonts/dejavu-sans-fonts/{dejavu}"), 0);
@@ -395,9 +397,8 @@ fn candidates(role: &str) -> Vec<(String, u32)> {
         "serif" => {
             add(format!("{mac_sup}/Times New Roman.ttf"), 0);
             add(format!("{win}\\times.ttf"), 0);
-            for d in lin {
-                add(format!("{d}/liberation/LiberationSerif-Regular.ttf"), 0);
-                add(format!("{d}/dejavu/DejaVuSerif.ttf"), 0);
+            for p in in_dirs(&lin, &["liberation/LiberationSerif-Regular.ttf", "dejavu/DejaVuSerif.ttf"]) {
+                add(p, 0);
             }
             add("/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf".into(), 0);
             add("/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif.ttf".into(), 0);
@@ -406,14 +407,14 @@ fn candidates(role: &str) -> Vec<(String, u32)> {
             add(format!("{mac_sys}/SFNSMono.ttf"), 0);
             add(format!("{mac_sys}/Menlo.ttc"), 0);
             add(format!("{win}\\consola.ttf"), 0);
-            for d in lin {
-                add(format!("{d}/dejavu/DejaVuSansMono.ttf"), 0);
+            for p in in_dirs(&lin, &["dejavu/DejaVuSansMono.ttf"]) {
+                add(p, 0);
             }
             add("/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf".into(), 0);
             // Fedora installs DejaVu Sans Mono only on request. Liberation Mono comes with LibreOffice
             // (in Workstation and KDE by default), Noto Sans Mono (variable, Regular by default) always.
-            for d in lin {
-                add(format!("{d}/liberation/LiberationMono-Regular.ttf"), 0);
+            for p in in_dirs(&lin, &["liberation/LiberationMono-Regular.ttf"]) {
+                add(p, 0);
             }
             add("/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf".into(), 0);
             add("/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf".into(), 0);
