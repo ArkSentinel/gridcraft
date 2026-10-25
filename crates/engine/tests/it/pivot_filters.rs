@@ -96,6 +96,8 @@ fn a_label_filter_and_a_value_filter_stay_independent() {
     let mut s = sales();
     s.execute("pivot.filter", json!({"field": "Region", "selected": ["East", "West"]})).unwrap();
     assert_eq!(items(&s), vec!["East", "West"]);
-    s.execute("pivot.filter", json!({"field": "Region", "topN": 1})).unwrap();
-    assert_eq!(items(&s), vec!["East"], "the value filter applies within the selected labels");
+    // Bottom N over the selection is West (165), not North (120): the untouched selection is what
+    // makes the result differ, so this fails if the value filter clears it.
+    s.execute("pivot.filter", json!({"field": "Region", "bottomN": 1})).unwrap();
+    assert_eq!(items(&s), vec!["West"], "the value filter applies within the selected labels");
 }

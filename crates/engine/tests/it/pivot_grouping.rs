@@ -116,6 +116,38 @@ fn sort_by_label_is_the_default_order() {
 }
 
 #[test]
+fn an_unsorted_field_keeps_source_order() {
+    // With `sort: none` the report follows the order items first appear in the source, not the
+    // hash-set iteration order. The pre-scan that interned every item with `first = 0` made every
+    // comparison equal, so the order could change from one refresh to the next.
+    let mut s = Session::new();
+    s.new_workbook();
+    let rows = json!([["Region", "Sales"], ["West", 1], ["East", 2], ["North", 3],]);
+    s.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
+    s.execute("selection.set", json!({"range": "A1"})).unwrap();
+    s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "Sheet1!F3"})).unwrap();
+    s.execute("pivot.sort", json!({"field": "Region", "order": "none"})).unwrap();
+    let l = labels(&s);
+    assert_eq!(l, vec!["West".to_string(), "East".to_string(), "North".to_string()], "source order, got {l:?}");
+    // A refresh must not reshuffle it.
+    for _ in 0..3 {
+        s.execute("pivot.refresh", json!({})).unwrap();
+        assert_eq!(labels(&s), l, "the order is stable across refreshes");
+    }
+}
+
+#[test]
+fn show_items_with_no_data_keeps_filtered_items_hidden() {
+    // Showing empty items must not resurrect the items a label filter hides.
+    let mut s = with_field("Region");
+    s.execute("pivot.filter", json!({"field": "Region", "selected": ["East"]})).unwrap();
+    s.execute("pivot.layout", json!({"showItemsWithNoData": true})).unwrap();
+    let l = labels(&s);
+    assert!(l.contains(&"East".to_string()), "the shown item is there, got {l:?}");
+    assert!(!l.contains(&"West".to_string()), "a hidden item stays hidden, got {l:?}");
+}
+
+#[test]
 fn a_grouped_and_filtered_report_survives_saving_and_reopening() {
     // End to end: group and filter a report, save the workbook, read it back, and check the report
     // is still grouped and filtered. All of these settings used to be dropped by the writer.

@@ -1016,32 +1016,8 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
     let filter_fmts: Vec<String> = filters.iter().map(|f| fmt_of(f.0)).collect();
     let row_fmts: Vec<String> = rows.iter().map(|(c, _)| fmt_of(*c)).collect();
     let col_fmts: Vec<String> = cols.iter().map(|(c, _)| fmt_of(*c)).collect();
-    // ---- value filters: pre-scan items, compute per-item aggregates, determine allowed sets
-    // Pre-scan: populate row_items/col_items for all records (respecting label filters).
-    for rec in &src.rows {
-        let mut skip = false;
-        for (c, f, g, _) in &filters {
-            if let Some(sel) = &f.selected {
-                let label = item_label(wb, rec.get(*c).unwrap_or(&Value::Empty), *g, &fmt_of(*c));
-                if !sel.iter().any(|x| x.eq_ignore_ascii_case(&label)) {
-                    skip = true;
-                    break;
-                }
-            }
-        }
-        if skip {
-            continue;
-        }
-        let mut rp = Vec::with_capacity(rows.len());
-        for (((c, f), fi), fmt) in rows.iter().zip(row_items.iter_mut()).zip(row_fmts.iter()) {
-            rp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), f.date_group, fmt, 0));
-        }
-        let mut cp = Vec::with_capacity(cols.len());
-        for (((c, f), fi), fmt) in cols.iter().zip(col_items.iter_mut()).zip(col_fmts.iter()) {
-            cp.push(fi.intern(wb, rec.get(*c).unwrap_or(&Value::Empty), f.date_group, fmt, 0));
-        }
-        let _ = (rp, cp);
-    }
+    // ---- value filters: per-item aggregates, then the allowed sets. Items are interned only in
+    // the main pass below, where `first` records the source order the report sorts by.
     // First pass: per-item aggregates for value-filtered fields.
     let mut item_agg: std::collections::HashMap<String, std::collections::HashMap<String, f64>> = std::collections::HashMap::new();
     for rec in &src.rows {
@@ -1270,28 +1246,37 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
 
     // Show items with no data: best-effort for worksheet sources (Excel limits this to OLAP).
     // Only safe for a single axis field, where we can intern every distinct source value and add
-    // it as its own row/column without creating bogus combinations.
+    // it as its own row/column without creating bogus combinations. Items the field's own label
+    // selection or value filter hides stay hidden.
     // shortcut: single-axis only; multi-axis and OLAP shared caches are not handled.
-    if rows.len() == 1 && pt.show_items_with_no_data {
-        let (c, f) = rows[0];
-        let fmt = row_fmts.first().cloned().unwrap_or_else(|| "General".into());
-        for rec in &src.rows {
-            row_items[0].intern(wb, rec.get(c).unwrap_or(&Value::Empty), f.date_group, &fmt, 0);
-        }
-        let n = row_items[0].items.len();
-        for i in 0..n {
-            row_set.insert(vec![i as u32]);
-        }
-    }
-    if cols.len() == 1 && pt.show_items_with_no_data {
-        let (c, f) = cols[0];
-        let fmt = col_fmts.first().cloned().unwrap_or_else(|| "General".into());
-        for rec in &src.rows {
-            col_items[0].intern(wb, rec.get(c).unwrap_or(&Value::Empty), f.date_group, &fmt, 0);
-        }
-        let n = col_items[0].items.len();
-        for i in 0..n {
-            col_set.insert(vec![i as u32]);
+    if pt.show_items_with_no_data {
+        for on_rows in [true, false] {
+            let field = if on_rows { rows.first().filter(|_| rows.len() == 1) } else { cols.first().filter(|_| cols.len() == 1) };
+            let fmt = if on_rows { row_fmts.first() } else { col_fmts.first() };
+            let Some((c, f)) = field else { continue };
+            let fmt = fmt.cloned().unwrap_or_else(|| "General".into());
+            let own = filters.iter().find(|(_, x, _, _)| x.source_col.eq_ignore_ascii_case(&f.source_col));
+            let hidden = own.and_then(|(_, x, _, _)| x.selected.as_ref());
+            let allowed_set = allowed.get(&f.source_col);
+            let items = if on_rows { &mut row_items } else { &mut col_items };
+            for rec in &src.rows {
+                let v = rec.get(*c).unwrap_or(&Value::Empty);
+                let label = item_label(wb, v, f.date_group, &fmt);
+                if hidden.is_some_and(|sel| !sel.iter().any(|x| x.eq_ignore_ascii_case(&label))) {
+                    continue;
+                }
+                if allowed_set.is_some_and(|set| !set.contains(&label)) {
+                    continue;
+                }
+                if let Some(fi) = items.first_mut() {
+                    fi.intern(wb, v, f.date_group, &fmt, 0);
+                }
+            }
+            let n = items.first().map(|fi| fi.items.len()).unwrap_or(0);
+            let set = if on_rows { &mut row_set } else { &mut col_set };
+            for i in 0..n {
+                set.insert(vec![i as u32]);
+            }
         }
     }
 
@@ -1533,6 +1518,31 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
             (v, _) => v,
         }
     };
+    // The value Difference From / % Difference From subtracts: the chosen base item's aggregate in
+    // the base field (the previous sibling by default). `None` means "no base", which Excel shows
+    // as an empty cell — the base item itself and the first sibling have nothing to compare to.
+    let base_difference = |vi: usize, rp: &[u32], cp: &[u32], vdef: &PivotValue| -> Option<Value> {
+        let depth = rp.len().checked_sub(1)?;
+        let sibs = siblings.get(&rp[..depth]).cloned().unwrap_or_else(|| level0.clone());
+        let cur = *rp.get(depth)?;
+        let pos = sibs.iter().position(|x| *x == cur)?;
+        // The base item is a label of the row field this path is at, not of the outermost one.
+        let chosen = match &vdef.base_item {
+            Some(bi) => *sibs.iter().find(|it| ctx.row_items.get(depth).is_some_and(|fi| fi.label(**it).eq_ignore_ascii_case(bi)))?,
+            None => *sibs.get(pos.checked_sub(1)?)?,
+        };
+        let base_vi = vdef
+            .base_field
+            .as_deref()
+            .and_then(|bf| vals.iter().position(|(_, v)| v.name.eq_ignore_ascii_case(bf) || v.source_col.eq_ignore_ascii_case(bf)))
+            .unwrap_or(vi);
+        let mut base_path = rp.to_vec();
+        *base_path.get_mut(depth)? = chosen;
+        if base_path.as_slice() == rp {
+            return None;
+        }
+        get(&base_path, cp, base_vi)
+    };
     let data_fmt: Vec<Option<String>> = vals
         .iter()
         .map(|(vs, v)| match v.show_as {
@@ -1647,82 +1657,25 @@ fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<
                         .unwrap_or(*vi);
                     ratio(raw, get(&[], &[], base_vi))
                 }
-                PivotShowAs::DifferenceFrom => {
-                    let base_val: Option<Value> = {
-                        let parent = if rp.is_empty() { None } else { Some(&rp[..rp.len().saturating_sub(1)]) };
-                        let sibs = parent.map(|p| siblings.get(p).cloned().unwrap_or_default()).unwrap_or_else(|| level0.clone());
-                        let pos = rp.last().copied().and_then(|last| sibs.iter().position(|x| *x == last)).unwrap_or(0);
-                        let base_idx = if let Some(bi) = &vdef.base_item {
-                            sibs.iter()
-                                .position(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
-                                .unwrap_or(pos)
-                        } else if pos > 0 {
-                            pos - 1
+                PivotShowAs::DifferenceFrom => match (raw.clone(), base_difference(*vi, rp, cp, vdef)) {
+                    (Value::Number(x), Some(Value::Number(y))) => Value::number(x - y),
+                    (Value::Error(e), _) => Value::Error(e),
+                    // No base (the first item, or the base item itself): Excel leaves the cell empty.
+                    (_, None) => Value::Empty,
+                    (v, _) => v,
+                },
+                PivotShowAs::PercentDifferenceFrom => match (raw.clone(), base_difference(*vi, rp, cp, vdef)) {
+                    (Value::Number(x), Some(Value::Number(y))) => {
+                        if y == 0.0 {
+                            Value::Error(gridcraft_core::CellError::Div0)
                         } else {
-                            0
-                        };
-                        // resolve label matching for base_item
-                        let chosen = if let Some(bi) = &vdef.base_item {
-                            sibs.iter()
-                                .copied()
-                                .find(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
-                                .unwrap_or_else(|| sibs.get(base_idx).copied().unwrap_or(0))
-                        } else {
-                            sibs.get(base_idx).copied().unwrap_or(0)
-                        };
-                        let mut base_path = rp.to_vec();
-                        if let Some(last) = base_path.last_mut() {
-                            *last = chosen;
+                            Value::number((x - y) / y)
                         }
-                        if base_path == *rp { None } else { get(&base_path, cp, *vi) }
-                    };
-                    match (raw.clone(), base_val) {
-                        (Value::Number(x), Some(Value::Number(y))) => Value::number(x - y),
-                        (Value::Error(e), _) => Value::Error(e),
-                        (v, _) => v,
                     }
-                }
-                PivotShowAs::PercentDifferenceFrom => {
-                    let base_val: Option<Value> = {
-                        let parent = if rp.is_empty() { None } else { Some(&rp[..rp.len().saturating_sub(1)]) };
-                        let sibs = parent.map(|p| siblings.get(p).cloned().unwrap_or_default()).unwrap_or_else(|| level0.clone());
-                        let pos = rp.last().copied().and_then(|last| sibs.iter().position(|x| *x == last)).unwrap_or(0);
-                        let base_idx = if let Some(bi) = &vdef.base_item {
-                            sibs.iter()
-                                .position(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
-                                .unwrap_or(pos)
-                        } else if pos > 0 {
-                            pos - 1
-                        } else {
-                            0
-                        };
-                        // resolve label matching for base_item
-                        let chosen = if let Some(bi) = &vdef.base_item {
-                            sibs.iter()
-                                .copied()
-                                .find(|it| ctx.row_items.first().map(|fi| fi.label(*it)).map(|l| l.eq_ignore_ascii_case(bi)).unwrap_or(false))
-                                .unwrap_or_else(|| sibs.get(base_idx).copied().unwrap_or(0))
-                        } else {
-                            sibs.get(base_idx).copied().unwrap_or(0)
-                        };
-                        let mut base_path = rp.to_vec();
-                        if let Some(last) = base_path.last_mut() {
-                            *last = chosen;
-                        }
-                        if base_path == *rp { None } else { get(&base_path, cp, *vi) }
-                    };
-                    match (raw.clone(), base_val) {
-                        (Value::Number(x), Some(Value::Number(y))) => {
-                            if y == 0.0 {
-                                Value::Error(gridcraft_core::CellError::Div0)
-                            } else {
-                                Value::number((x - y) / y)
-                            }
-                        }
-                        (Value::Error(e), _) => Value::Error(e),
-                        (v, _) => v,
-                    }
-                }
+                    (Value::Error(e), _) => Value::Error(e),
+                    (_, None) => Value::Empty,
+                    (v, _) => v,
+                },
                 PivotShowAs::RunningTotal => match (rp.first(), &raw) {
                     (Some(first), Value::Number(_)) => {
                         let mut acc = 0.0;

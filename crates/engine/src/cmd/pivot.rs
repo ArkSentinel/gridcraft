@@ -702,7 +702,18 @@ fn insert_pivot(s: &mut Session, p: &Json) -> Result<Json> {
         _ => next_pivot_name(&s.doc()?.wb),
     };
     let dest_raw = str_param(p, "destination").or_else(|| str_param(p, "location")).unwrap_or("new").trim().to_string();
-    let dest = if dest_raw.eq_ignore_ascii_case("existing") { str_param(p, "location").unwrap_or("").trim().to_string() } else { dest_raw };
+    let dest = if dest_raw.eq_ignore_ascii_case("existing") {
+        // "existing" is a mode, not a place: the sheet comes from `location`, and an empty one
+        // must not silently fall back to the new-sheet path (which also bypasses the
+        // structure-protection check above).
+        let loc = str_param(p, "location").unwrap_or("").trim().to_string();
+        if loc.is_empty() {
+            return Err(bad("insert.pivotTable", "`location` is required for an existing worksheet"));
+        }
+        loc
+    } else {
+        dest_raw
+    };
     // Existing sheet destination: (sheet index, anchor).
     let target: Option<(usize, CellRef)> = if dest.eq_ignore_ascii_case("new") || dest.is_empty() {
         None
@@ -1316,6 +1327,10 @@ fn value_settings(s: &mut Session, p: &Json) -> Result<Json> {
             };
             if percent(sa) && !v.number_format.as_deref().is_some_and(|f| f.contains('%')) {
                 v.number_format = Some("0.00%".into());
+            } else if !percent(sa) && percent(cur.show_as) && fmt.is_none() && v.number_format.as_deref() == Some("0.00%") {
+                // The automatic percent format leaves with the percent mode, so switching back to
+                // "No Calculation" doesn't print a sum as 41500.00%.
+                v.number_format = None;
             }
             v.show_as = sa;
         }
@@ -1355,11 +1370,13 @@ fn slicer_pivot(s: &mut Session, p: &Json) -> Result<Json> {
     let field = str_param(p, "field").ok_or_else(|| bad(C, "missing `field`"))?.to_string();
     let value = str_param(p, "value").ok_or_else(|| bad(C, "missing `value`"))?.to_string();
     let multi = bool_param(p, "multi").unwrap_or(false);
-    // Build selected list.
-    let current: Option<Vec<String>> = s.doc().ok().and_then(|d| {
-        let pt = d.wb.active()?.pivots.last()?;
-        pt.filters.iter().find(|f| f.source_col.eq_ignore_ascii_case(&field)).and_then(|f| f.selected.clone())
-    });
+    // Read and write the same PivotTable: resolve it once, and pass its id to `filter` so the
+    // toggle never lands on whichever report happens to sit under the active cell.
+    let (si, pi) = find_pivot(s, p)?;
+    let (pivot_id, current): (u32, Option<Vec<String>>) = {
+        let pt = s.doc()?.wb.sheet(si).and_then(|sh| sh.pivots.get(pi)).ok_or_else(|| other("There's no such PivotTable."))?;
+        (pt.id, pt.filters.iter().find(|f| f.source_col.eq_ignore_ascii_case(&field)).and_then(|f| f.selected.clone()))
+    };
     let new_selected = if multi {
         let mut set = current.unwrap_or_default();
         if let Some(pos) = set.iter().position(|x| x.eq_ignore_ascii_case(&value)) {
@@ -1374,7 +1391,10 @@ fn slicer_pivot(s: &mut Session, p: &Json) -> Result<Json> {
             _ => Some(vec![value.clone()]),
         }
     };
-    let mut q = json!({"field": field});
+    let mut q = json!({"field": field, "pivot": pivot_id});
+    if let Some(r) = p.get("replace") {
+        q["replace"] = r.clone();
+    }
     if let Some(sel) = new_selected {
         q["selected"] = json!(sel);
     } else {
@@ -1477,6 +1497,9 @@ fn filter(s: &mut Session, p: &Json) -> Result<Json> {
         }
         v
     });
+    // An absent `selected` and an explicit `null` both parse to None; only the explicit null (or a
+    // call with no value filter, i.e. a plain clear) means "drop the label selection".
+    let clear_selection = matches!(p.get("selected"), Some(Json::Null)) || vf.is_none();
     update(s, p, |pt, src, _| {
         let field = canonical(C, src, &field)?;
         let i = pt.filters.iter().position(|f| f.source_col.eq_ignore_ascii_case(&field));
@@ -1485,7 +1508,9 @@ fn filter(s: &mut Session, p: &Json) -> Result<Json> {
                 if in_axes(pt, &field) && vf.is_none() {
                     pt.filters.remove(i);
                 } else if let Some(f) = pt.filters.get_mut(i) {
-                    f.selected = None;
+                    if clear_selection {
+                        f.selected = None;
+                    }
                     f.value_filter = vf.clone();
                 }
             }
@@ -1503,13 +1528,6 @@ fn filter(s: &mut Session, p: &Json) -> Result<Json> {
                     pt.filters.push(PivotFilter { source_col: field.clone(), selected: None, value_filter: vf.clone() });
                 }
             }
-        }
-        // Apply value_filter to an existing filter without selected
-        if vf.is_some()
-            && let Some(idx) = i
-            && let Some(f) = pt.filters.get_mut(idx)
-        {
-            f.value_filter = vf.clone();
         }
         Ok(json!({"field": field}))
     })
@@ -2170,6 +2188,65 @@ mod tests {
         assert_eq!(text(&s, "A5"), "Grand Total");
         assert_eq!(val(&s, "B5"), Value::Number(420.0));
         assert!(s.execute("pivot.filter", json!({"field": "Product", "selected": []})).is_err());
+    }
+
+    #[test]
+    fn switching_off_a_percent_mode_drops_its_automatic_format() {
+        // The dialog opens on Percentage, the user picks "No Calculation" and presses OK without
+        // touching the Number Format controls: a stored 0.00% would print 415 as 41500.00%.
+        let mut s = sales();
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"]})).unwrap();
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "percentOfGrandTotal"})).unwrap();
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "normal"})).unwrap();
+        assert_eq!(pt(&s).values[0].number_format, None, "the automatic percent format leaves with the mode");
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        assert_eq!(sh.value(CellRef::parse("B4").unwrap()), Value::Number(415.0));
+        assert_eq!(text(&s, "B4"), "415");
+        // An explicit format the user chose is not the engine's to drop.
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "numberFormat": "0.00%"})).unwrap();
+        s.execute("pivot.valueSettings", json!({"field": "Sum of Sales", "showAs": "normal"})).unwrap();
+        assert_eq!(pt(&s).values[0].number_format.as_deref(), Some("0.00%"), "a user format stays");
+    }
+
+    #[test]
+    fn existing_worksheet_without_a_location_is_refused() {
+        // It used to fall through to the new-sheet path, creating a sheet in a workbook whose
+        // structure is protected (the check only saw `destination`).
+        let mut s = sales();
+        assert!(s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "existing"})).is_err());
+        assert!(
+            s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "existing", "location": "  "})).is_err()
+        );
+        s.execute("insert.pivotTable", json!({"rows": ["Region"], "values": ["Sales"], "destination": "existing", "location": "Sheet1!F3"})).unwrap();
+        assert_eq!(pt(&s).anchor, CellRef::parse("F3").unwrap());
+    }
+
+    #[test]
+    fn a_slicer_toggle_filters_the_pivot_it_names() {
+        // The toggle used to read the last PivotTable of the active sheet and let `filter` find one
+        // by the active cell, so a named pivot was read and a different one written.
+        let mut s = sales();
+        s.execute(
+            "insert.pivotTable",
+            json!({"source": "Sheet1!A1:E13", "name": "First", "rows": ["Region"], "values": ["Sales"], "destination": "Sheet1!F3"}),
+        )
+        .unwrap();
+        s.execute(
+            "insert.pivotTable",
+            json!({"source": "Sheet1!A1:E13", "name": "Second", "rows": ["Product"], "values": ["Sales"], "destination": "Sheet1!J3"}),
+        )
+        .unwrap();
+        // The active cell is not in either report, and the named one is not the last.
+        s.execute("selection.set", json!({"cell": "A1"})).unwrap();
+        s.execute("pivot.slicer", json!({"pivot": "First", "field": "Region", "value": "East"})).unwrap();
+        let d = s.doc().unwrap();
+        let sh = d.wb.active().unwrap();
+        let first = sh.pivots.iter().find(|p| p.name == "First").unwrap();
+        let second = sh.pivots.iter().find(|p| p.name == "Second").unwrap();
+        let sel = |p: &gridcraft_model::PivotTable| p.filters.iter().find(|f| f.source_col == "Region").and_then(|f| f.selected.clone());
+        assert_eq!(sel(first), Some(vec!["East".to_string()]), "the named PivotTable gets the filter");
+        assert_eq!(sel(second), None, "the other PivotTable is untouched");
     }
 
     #[test]

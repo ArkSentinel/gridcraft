@@ -657,14 +657,24 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         EngineError::Other(format!("{path}: {e}"))
     })?;
-    #[cfg(not(unix))]
-    if let Some(p) = &prior {
-        let _ = f.set_permissions(p.clone());
-    }
     f.write_all(bytes).and_then(|()| f.flush()).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         EngineError::Other(format!("{path}: {e}"))
     })?;
+    // The mode above is filtered by the umask, so a group-writable destination under a restrictive
+    // umask (0664 saved with umask 022) would lose its group write. Set the saved permissions
+    // explicitly on the finished temporary, before it replaces the destination.
+    #[cfg(unix)]
+    if let Some(p) = &prior {
+        f.set_permissions(p.clone()).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            EngineError::Other(format!("{path}: {e}"))
+        })?;
+    }
+    #[cfg(not(unix))]
+    if let Some(p) = &prior {
+        let _ = f.set_permissions(p.clone());
+    }
     std::fs::rename(&tmp, path).map_err(|e| {
         // A write or rename that fails (full disk, the workbook locked by another app) leaves
         // no temporary file beside the user's workbook.
@@ -799,6 +809,17 @@ mod tests {
         write_file(dest.to_str().unwrap(), b"v2").unwrap();
         let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        // Saving keeps the destination's bits *exactly*: the mode given to `open` is filtered by the
+        // umask, so without an explicit set_permissions a 0664 file becomes 0644 under umask 022
+        // (and a collaborator loses write access) and a 0666 one becomes 0664 even under umask 002.
+        for prior in [0o600, 0o664, 0o666] {
+            let path = dir.join(format!("mode-{prior:o}.xlsx"));
+            std::fs::write(&path, b"v1").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(prior)).unwrap();
+            write_file(path.to_str().unwrap(), b"v2").unwrap();
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, prior, "a save keeps mode {prior:o} (got {mode:o})");
+        }
         // And a brand-new file is created with the restrictive, not permissive, default.
         let fresh = dir.join("new.xlsx");
         write_file(fresh.to_str().unwrap(), b"v").unwrap();

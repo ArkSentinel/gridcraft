@@ -3,7 +3,7 @@
 //! opens the area menu.
 
 use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::SheetApp;
 use serde_json::json;
@@ -241,4 +241,28 @@ fn picking_percent_of_grand_total_keeps_a_percentage_format() {
     let v = &info["values"][0];
     assert_eq!(v["showAs"], "percentOfGrandTotal");
     assert_eq!(v["numberFormat"], "0.00%", "a percentage mode keeps a percentage format");
+}
+
+#[test]
+fn the_create_pivot_dialog_will_not_send_an_empty_existing_location() {
+    // An empty Location made the engine silently create a new sheet (and skip the structure
+    // protection check), so OK stays disabled until a place is given.
+    let mut h = harness();
+    h.state_mut().open_dialog("insertPivotTable", json!({"source": "Sheet1!A1:D3", "destination": "new", "location": "Sheet1!A1"}));
+    h.run_steps(3);
+    let ok = |h: &mut Harness| h.get_all_by_label_contains("OK").next().map(|n| !n.accesskit_node().is_disabled());
+    assert_eq!(ok(&mut h), Some(true), "OK is available for a new worksheet");
+    {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        d.values.insert("destination".into(), json!("existing"));
+        d.values.insert("location".into(), json!(""));
+    }
+    h.run_steps(3);
+    let open = h.state().dialog.is_some();
+    assert!(open, "the dialog stays open");
+    assert_eq!(ok(&mut h), Some(false), "OK is disabled while Existing Worksheet has no location");
+    // And with a location it is usable again.
+    h.state_mut().dialog.as_mut().unwrap().values.insert("location".into(), json!("Sheet1!F3"));
+    h.run_steps(3);
+    assert_eq!(ok(&mut h), Some(true), "OK is available once a location is typed");
 }

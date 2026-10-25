@@ -99,10 +99,11 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 - **Round trip:** number bins, manual text groups, sort-by-field, custom order, blank lines,
   calculated items and value filters are written in GridCraft's own `<gc:pivotSettings>` element
   inside the pivot's `<extLst>`, and read back; repeat item labels and show-items-with-no-data use
-  the standard `repeatItemLabels` / `showAll` attributes. Excel ignores an `ext` it does not know, so
-  it opens these files without a repair prompt — but it also **drops them when it saves**, so a
-  GridCraft → Excel → GridCraft trip loses them. Settings OOXML can express (date grouping, layout,
-  totals, sort direction, collapsed items, show-values-as, formats) survive any editor.
+  the standard `repeatItemLabels` / `showAll` attributes. Excel should ignore an `ext` it does not
+  know, so these files should open without a repair prompt (not yet checked in Excel) — but it
+  drops the extension when it saves, so a GridCraft → Excel → GridCraft trip loses those settings.
+  Settings OOXML can express (date grouping, layout, totals, sort direction, collapsed items,
+  show-values-as, formats) survive any editor.
 - **Estimate:** 20–30 h for beta (25–40 h full).
 
 ### 9. Keyboard-first users: key tips, shortcuts, context menus (U)

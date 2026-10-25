@@ -306,20 +306,24 @@ impl PivotWriter {
     pub fn add_sheet(&mut self, wb: &Workbook, si: usize, out: &mut Out, rels: &mut Rels) {
         let Some(sheet) = wb.sheet(si) else { return };
         for (idx, pt) in sheet.pivots.iter().enumerate() {
-            let Some(cache) = build_cache(wb, pt, si) else { continue };
-            // Reuse an existing cache when the pivot shares one (shared_cache).
+            // Reuse an existing cache when the pivot shares one (shared_cache) *and* that cache can
+            // serve this table's axes and groupings; otherwise fall through and write its own.
             let shared_key = pt.shared_cache.clone();
-            let reused = shared_key.as_ref().and_then(|k| self.shared.get(k).cloned());
-            if let Some((cid, cache_part, reused_cache)) = reused {
+            if let Some((cid, cache_part, cache)) = shared_key.as_ref().and_then(|k| self.shared.get(k))
+                && let Some(axis_map) = shared_axis_map(&cache.fields, pt)
+            {
+                let mut reused_cache = cache.clone();
+                reused_cache.axis_map = axis_map;
                 self.tables += 1;
                 let t = self.tables;
                 rels.add("pivotTable", &format!("../pivotTables/pivotTable{t}.xml"));
                 let mut tr = Rels::default();
                 tr.add("pivotCacheDefinition", &format!("../pivotCache/{}", cache_part.trim_start_matches("pivotCache/")));
                 out.part(&format!("xl/pivotTables/_rels/pivotTable{t}.xml.rels"), None, tr.xml().into_bytes());
-                self.pending.push(Pending { part: format!("xl/pivotTables/pivotTable{t}.xml"), sheet: si, idx, cache_id: cid, cache: reused_cache });
+                self.pending.push(Pending { part: format!("xl/pivotTables/pivotTable{t}.xml"), sheet: si, idx, cache_id: *cid, cache: reused_cache });
                 continue;
             }
+            let Some(cache) = build_cache(wb, pt, si) else { continue };
             let n = self.caches.len() as u32 + 1;
             let cache_part = format!("xl/pivotCache/pivotCacheDefinition{n}.xml");
             let cache_rel = format!("pivotCache/pivotCacheDefinition{n}.xml");
@@ -447,6 +451,38 @@ fn header_text(v: &Value) -> String {
         Value::Empty => String::new(),
         v => label(v).trim().to_string(),
     }
+}
+
+/// Maps this PivotTable's axis fields onto an existing cache's fields, or `None` when the cache
+/// can't serve it: a field that isn't a database field of that cache, a date grouping the cache
+/// didn't build, or an axis/page field whose items the cache never itemized (so the table part
+/// would write an empty `<items>` list). A shared cache is reused only when this succeeds.
+fn shared_axis_map(fields: &[CField], pt: &PivotTable) -> Option<Vec<Option<usize>>> {
+    let mut map = Vec::with_capacity(pt.rows.len() + pt.columns.len());
+    for pf in pt.rows.iter().chain(pt.columns.iter()) {
+        let b = fields.iter().position(|f| f.col.is_some() && same(&f.name, &pf.source_col))?;
+        let at = if pf.date_group == PivotDateGroup::None {
+            b
+        } else {
+            fields.iter().position(|f| f.group.as_ref().is_some_and(|g| g.base == b && g.by == pf.date_group))?
+        };
+        let usable = fields.get(at).is_some_and(|f| f.group.is_some() || f.itemized);
+        if !usable {
+            return None;
+        }
+        map.push(Some(at));
+    }
+    // Page fields need their items too (a one-item selection is written as an item index).
+    for f in &pt.filters {
+        if pt.rows.iter().chain(pt.columns.iter()).any(|a| same(&a.source_col, &f.source_col)) {
+            continue;
+        }
+        let i = fields.iter().position(|x| x.col.is_some() && same(&x.name, &f.source_col))?;
+        if !fields.get(i).is_some_and(|x| x.group.is_some() || x.itemized) {
+            return None;
+        }
+    }
+    Some(map)
 }
 
 fn build_cache(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Option<Cache> {

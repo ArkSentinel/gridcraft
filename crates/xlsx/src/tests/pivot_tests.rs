@@ -857,3 +857,45 @@ fn the_gridcraft_extension_is_well_formed_and_ignored_by_the_reader_when_absent(
     let plain_xml = String::from_utf8(plain.get("xl/pivotTables/pivotTable3.xml").cloned().unwrap_or_default()).unwrap();
     assert!(!plain_xml.contains("gc:pivotSettings"));
 }
+
+#[test]
+fn a_shared_cache_is_not_reused_for_a_pivot_it_cannot_serve() {
+    // `shared_cache` can arrive from JSON (imported or hand-built workbooks), not only from our own
+    // writer: two tables may share a key while disagreeing. A date grouping is the clearest case —
+    // the shared cache has no month field, so the second table must get a cache of its own rather
+    // than borrow the first one's axis mapping.
+    let mut wb = workbook();
+    {
+        let sh = wb.sheet_mut(1).unwrap();
+        sh.pivots[1].rows = vec![PivotField { source_col: "Region".into(), ..PivotField::default() }];
+        sh.pivots[2].rows = vec![PivotField { source_col: "Date".into(), date_group: PivotDateGroup::Months, ..PivotField::default() }];
+        sh.pivots[1].shared_cache = Some("Cache1".into());
+        sh.pivots[2].shared_cache = Some("Cache1".into());
+    }
+    let bytes = write_xlsx(&wb).unwrap();
+    let parts = unzip(&bytes);
+    let caches = parts.keys().filter(|k| k.starts_with("xl/pivotCache/pivotCacheDefinition")).count();
+    assert!(caches >= 3, "an incompatible share gets its own cache (pivot 0's, the shared one, theirs), got {caches}");
+    // And the month grouping is written, so the file reads back with the axis the table asked for.
+    let (back, report) = read_xlsx(&bytes).unwrap();
+    assert!(report.warnings.iter().all(|w| !w.to_lowercase().contains("pivot")), "{:?}", report.warnings);
+    assert_eq!(back.sheet(1).unwrap().pivots[2].rows[0].date_group, PivotDateGroup::Months);
+}
+
+#[test]
+fn a_compatible_shared_cache_is_still_reused() {
+    let mut wb = workbook();
+    {
+        let sh = wb.sheet_mut(1).unwrap();
+        sh.pivots[1].shared_cache = Some("Sales".into());
+        sh.pivots[2] = sh.pivots[1].clone();
+        sh.pivots[2].id = 99;
+        sh.pivots[2].name = "Copy".into();
+        sh.pivots[2].anchor = at("A40");
+        sh.pivots[2].shared_cache = Some("Sales".into());
+    }
+    let parts = unzip(&write_xlsx(&wb).unwrap());
+    let caches = parts.keys().filter(|k| k.starts_with("xl/pivotCache/pivotCacheDefinition")).count();
+    // Pivot 0 has its own cache; the two identical tables after it share one.
+    assert_eq!(caches, 2, "one shared cache for the two identical tables, plus pivot 0's");
+}

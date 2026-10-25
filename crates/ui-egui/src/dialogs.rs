@@ -1822,6 +1822,11 @@ fn paste_special_shortcuts(d: &mut Dialog, ctx: &egui::Context) {
 }
 
 fn ok_cancel(ui: &mut egui::Ui, confirm: &mut bool, open: &mut bool) {
+    ok_cancel_enabled(ui, confirm, open, true)
+}
+
+/// OK/Cancel with OK greyed out when the dialog's inputs can't be submitted yet.
+fn ok_cancel_enabled(ui: &mut egui::Ui, confirm: &mut bool, open: &mut bool, enabled: bool) {
     ui.add_space(8.0);
     // A row as tall as the buttons: a right-to-left layout straight in the window takes all the
     // height it is offered, which stretched every form dialog to the screen's height.
@@ -1829,8 +1834,9 @@ fn ok_cancel(ui: &mut egui::Ui, confirm: &mut bool, open: &mut bool) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let lang = crate::i18n::current(ui.ctx());
             let t = crate::theme::Tokens::get(ui.ctx());
-            let ok = ui.add(egui::Button::new(egui::RichText::new(format!("   {}   ", lang.tr("OK"))).color(t.on_accent)).fill(t.accent));
-            if ok.clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+            let ok =
+                ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(format!("   {}   ", lang.tr("OK"))).color(t.on_accent)).fill(t.accent));
+            if ok.clicked() || (enabled && ui.input(|i| i.key_pressed(Key::Enter))) {
                 *confirm = true;
             }
             if ui.button(format!(" {} ", lang.tr("Cancel"))).clicked() {
@@ -2908,8 +2914,12 @@ fn insert_pivot_table(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, con
             });
         }
     });
-    ui.radio_value(&mut source_type, "external".into(), lang.tr("Use an external data source"));
-    ui.radio_value(&mut source_type, "model".into(), lang.tr("Use this workbook's Data Model"));
+    // External sources and the Data Model aren't implemented, so they can't be chosen (a range is
+    // what `insert.pivotTable` reads; picking one of these would silently make a range report).
+    ui.add_enabled_ui(false, |ui| {
+        ui.radio_value(&mut source_type, "external".into(), lang.tr("Use an external data source"));
+        ui.radio_value(&mut source_type, "model".into(), lang.tr("Use this workbook's Data Model"));
+    });
 
     ui.add_space(8.0);
 
@@ -2952,8 +2962,11 @@ fn insert_pivot_table(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, con
     d.values.insert("destination".into(), json!(destination.clone()));
     d.values.insert("location".into(), json!(location.clone()));
 
+    // "Existing Worksheet" needs a place: an empty one would make the engine silently create a
+    // sheet (and skip the structure-protection check), so OK stays disabled until it's filled.
+    let usable = destination != "existing" || !location.trim().is_empty();
     let mut open = true;
-    ok_cancel(ui, confirm, &mut open);
+    ok_cancel_enabled(ui, confirm, &mut open, usable);
     if *confirm {
         app.run_or_alert("insert.pivotTable", json!({"source": source, "destination": destination, "location": location}));
     }
